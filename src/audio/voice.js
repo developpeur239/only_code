@@ -116,7 +116,7 @@ function areas(N, scale, P, out) {
 }
 
 // ---------------------------------------------------------------- the tube
-const NASAL = [[0, 1.0], [.12, 1.8], [.35, 2.9], [.6, 2.6], [.82, 1.6], [.93, 1.0], [1, .75]];
+const NASAL = [[0, 1.0], [.12, 1.8], [.35, 2.9], [.6, 2.6], [.82, 1.4], [.93, .8], [1, .5]];
 function Tract(sg) {
   const scale = sg.L / 17.6, N = NS, dx = sg.L / N, fs = C / dx, M = Math.round(sg.nasal / dx), jv = Math.round(sg.velum * N), cb = Math.max(8, Math.round(fs / CTRL));
   const lp = fc => 1 - Math.exp(-TAU * fc / fs);
@@ -128,7 +128,7 @@ function Tract(sg) {
     NR: new Float64Array(M), NL: new Float64Array(M), njR: new Float64Array(M + 1), njL: new Float64Array(M + 1),
     wallK: .05, lipLP: 0, nosLP: 0, lipG: .5, lipRef: .9, wallLP: 0, wallLP2: 0, last: 0,
   };
-  for (let k = 0; k < M; k++) { T.NA[k] = pw(NASAL, (k + .5) / M) * scale * scale; T.nloss[k] = 1 - .010; }
+  for (let k = 0; k < M; k++) { T.NA[k] = pw(NASAL, (k + .5) / M) * scale * scale; T.nloss[k] = 1 - .016; }
   T.NA[0] = 0;
   return T;
 }
@@ -207,7 +207,7 @@ const CONS = {
   k: { k: 's', pl: 'dor', vl: 1, d: .075 }, g: { k: 's', pl: 'dor', vl: 0, d: .07 },
   f: { k: 'f', pl: 'lab', vl: 1, d: .10, Ac: .10 }, v: { k: 'f', pl: 'lab', vl: 0, d: .08, Ac: .12 },
   s: { k: 'f', pl: 'tip', vl: 1, d: .11, Ac: .05, hf: 1 }, z: { k: 'f', pl: 'tip', vl: 0, d: .09, Ac: .06, hf: 1 },
-  S: { k: 'f', pl: 'pal', vl: 1, d: .11, Ac: .09, rnd: .8 }, Z: { k: 'f', pl: 'pal', vl: 0, d: .09, Ac: .10, rnd: .8 },
+  S: { k: 'f', pl: 'pal', vl: 1, d: .12, Ac: .12, rnd: 1 }, Z: { k: 'f', pl: 'pal', vl: 0, d: .10, Ac: .13, rnd: 1 },
   m: { k: 'n', pl: 'lab', vl: 0, d: .08 }, n: { k: 'n', pl: 'tip', vl: 0, d: .07 }, J: { k: 'n', pl: 'dpal', vl: 0, d: .08 },
   l: { k: 'l', pl: 'tip', vl: 0, d: .06, Ac: .28 }, R: { k: 'l', pl: 'uvu', vl: 0, d: .07, Ac: .09, nz: .25 },
   j: { k: 'g', v: 'i', pl: 'dpal', d: .055, Ac: .22 }, w: { k: 'g', v: 'u', pl: 'lab', d: .055, Ac: .22 }, H: { k: 'g', v: 'y', pl: 'lab', d: .055, Ac: .22 },
@@ -218,7 +218,7 @@ const CG = (typeof CONSGAIN !== 'undefined') ? CONSGAIN : (typeof require === 'f
 for (const c in CONS) Object.assign(CONS[c], { g: .01, gb: .1 }, CG && CG[c] || {});
 // consonant gestures aim past the contact (a virtual target): the closure is made firmly and early, as real tongues do
 const VT = 1.3;
-const PLACE = { lab: [.995, 0, .7], tip: [.905, 0, .9], pal: [.86, 0, 1.1], dpal: [.80, 0, 1.4], uvu: [.60, 0, 1.4] };
+const PLACE = { lab: [.995, 0, .7], tip: [.905, 0, .9], pal: [.80, 0, 1.2], dpal: [.80, 0, 1.4], uvu: [.60, 0, 1.4] };
 const isV = p => VOWELS.includes(p) || p === 'M';
 
 function substrate(v) {
@@ -232,18 +232,20 @@ function dorsumPlace(v) { const s = substrate(v); return s.q1 > .3 ? .76 : s.q1 
 // ---------------------------------------------------------------- the gesture score
 // syllables: [{ ph: ['d','u','s'], midi, t0 (vowel onset, s), t1 (note end, s), dyn (0..1) }]
 // returns timelines of step targets for every articulator channel
+// diction: singers lengthen consonants to be understood; 1 = conversational
+let DICTION = 1.35;
 function plan(syl) {
-  const segs = [];
+  const segs = []; const dur = c => CONS[c].d * (CONS[c].k === 'g' ? 1 : DICTION);
   for (let k = 0; k < syl.length; k++) {
     const S = syl[k], ph = S.ph, vi = ph.findIndex(isV);
     const onset = ph.slice(0, vi), nuc = ph[vi], coda = ph.slice(vi + 1);
-    let t = S.t0; const od = onset.map(c => CONS[c].d);
+    let t = S.t0; const od = onset.map(dur);
     let ts = S.t0 - od.reduce((a, b) => a + b, 0);
     onset.forEach((c, i) => { segs.push({ ph: c, a: ts, b: ts + od[i], syl: k }); ts += od[i]; });
-    const cd = coda.map(c => CONS[c].d), cdur = cd.reduce((a, b) => a + b, 0);
+    const cd = coda.map(dur), cdur = cd.reduce((a, b) => a + b, 0);
     let ve = S.t1 - cdur;
     const nx = syl[k + 1];
-    if (nx) { const vi2 = nx.ph.findIndex(isV), on2 = nx.ph.slice(0, vi2).reduce((a, c) => a + CONS[c].d, 0); ve = Math.min(ve, nx.t0 - on2 - cdur); }
+    if (nx) { const vi2 = nx.ph.findIndex(isV), on2 = nx.ph.slice(0, vi2).reduce((a, c) => a + dur(c), 0); ve = Math.min(ve, nx.t0 - on2 - cdur); }
     segs.push({ ph: nuc, a: S.t0, b: ve, syl: k, v: 1 });
     let tc = ve; coda.forEach((c, i) => { segs.push({ ph: c, a: tc, b: tc + cd[i], syl: k }); tc += cd[i]; });
   }
@@ -282,7 +284,7 @@ function sing(singer, syl, opts = {}) {
   // stops open about as fast as they close (~10 ms): a slow release turns a /b/ or /d/ into a glide, heard as /l/
   const ch = { lab: F2(.009, .008), tip: F2(.008, .007), pal: F2(.010, .009), dpal: F2(.011, .010), dor: F2(.011, .009), uvu: F2(.014, .012) };
   const chAc = { lab: 0, tip: 0, pal: 0, dpal: 0, dor: 0, uvu: 0 };
-  const chU = { lab: .995, tip: .905, pal: .86, dpal: .80, dor: .7, uvu: .6 };
+  const chU = { lab: .995, tip: .905, pal: .80, dpal: .80, dor: .7, uvu: .6 };
   const armed = { lab: null, tip: null, pal: null, dpal: null, dor: null, uvu: null }, closedFor = { lab: 0, tip: 0, pal: 0, dpal: 0, dor: 0, uvu: 0 };
   const ff0 = underdamped(syl[0].midi, .035, .55, DT);
   const wJ = wander(R, 6, DT), wDrift = wander(R, .25, DT), wTrem = wander(R, sg.tremor[0], DT), wVib = wander(R, .5, DT), wAmp = wander(R, 3, DT), wRd = wander(R, 1, DT);
@@ -422,6 +424,6 @@ function resample(x, fin, fout) {
   return out;
 }
 
-return { set wallAbs(v) { WALL_ABS = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
+return { set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
 })();
 if (typeof module !== 'undefined') module.exports = VOICE;
