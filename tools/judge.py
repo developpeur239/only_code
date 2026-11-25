@@ -4,7 +4,8 @@
 An offline French speech recogniser (Vosk) listens to a rendered line and we count the words it gets right.
 If a machine that has never heard these singers understands them, a person will.
 
-usage: python3 tools/judge.py MODEL_DIR file.wav "expected words" [file2.wav "expected" ...]
+usage: python3 tools/judge.py MODEL_DIR [--grammar "w1 w2 ..."] file.wav "expected words" [file2.wav "expected" ...]
+       --grammar: a closed set of words (a confusion test: which of these did it hear?)
        (MODEL_DIR: an unpacked vosk-model-*-fr-*; the wav is converted to 16 kHz mono with ffmpeg)
 """
 import json, subprocess, sys, unicodedata, re
@@ -28,11 +29,11 @@ def wer(ref, hyp):
     return d[len(r)][len(h)] / max(1, len(r)), hits, len(r)
 
 
-def listen(model, path):
+def listen(model, path, grammar=None):
     import vosk
     vosk.SetLogLevel(-1)
     pcm = subprocess.run(['ffmpeg', '-loglevel', 'error', '-i', path, '-ar', '16000', '-ac', '1', '-f', 's16le', '-'], capture_output=True, check=True).stdout
-    rec = vosk.KaldiRecognizer(model, 16000)
+    rec = vosk.KaldiRecognizer(model, 16000, json.dumps(grammar + ['[unk]'], ensure_ascii=False)) if grammar else vosk.KaldiRecognizer(model, 16000)
     out = []
     for i in range(0, len(pcm), 8000):
         if rec.AcceptWaveform(pcm[i:i + 8000]): out.append(json.loads(rec.Result()).get('text', ''))
@@ -46,8 +47,10 @@ def main():
     model = vosk.Model(sys.argv[1])
     res = []
     args = sys.argv[2:]
+    grammar = None
+    if args and args[0] == '--grammar': grammar = args[1].split(); args = args[2:]
     for k in range(0, len(args), 2):
-        hyp = listen(model, args[k])
+        hyp = listen(model, args[k], grammar)
         e, hits, n = wer(args[k + 1], hyp)
         res.append({'file': args[k], 'expected': args[k + 1], 'heard': hyp, 'wer': round(e, 3), 'words_heard': hits, 'words': n})
     print(json.dumps(res, ensure_ascii=False, indent=1))

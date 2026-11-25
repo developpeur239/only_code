@@ -11,7 +11,7 @@ const V = require('../src/audio/voice.js'), D = require('./dsp.js');
 
 // dB against the vowel. fricatives: mean level through the consonant; stops: the first 10 ms after release
 // (approximate relative intensities of French consonants in sung, sustained context)
-const FRIC = { s: -14, z: -18, S: -12, Z: -16, f: -26, v: -24, R: -20 };
+const FRIC = { s: -14, z: -18, S: -12, Z: -16, f: -26, v: -24, R: -16 };
 const BURST = { p: -14, t: -8, k: -9, b: -18, d: -12, g: -12 };
 
 function measure(c, singer = 'grandpa') {
