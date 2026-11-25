@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Look-dev : la boîte</title>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block;width:100vw;height:100vh;object-fit:contain}</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+// ============================================================================
+// boite.html - look-dev of the music box by candlelight. One scene, two renderers:
+//   ?mode=rt  real time: ray-marched SDF, direct light + soft shadows, one reflection bounce
+//   ?mode=pt  path traced: same scene, thin lens, many bounces, accumulated sample by sample
+// Every shape, material and light is code. No textures, no models, no libraries.
+// ============================================================================
+const Q = new URLSearchParams(location.search);
+const MODE = Q.get('mode') === 'pt' ? 1 : 0, W = +(Q.get('w') || 1280), H = +(Q.get('h') || 720);
+const cv = document.getElementById('c'); cv.width = W; cv.height = H;
+const gl = cv.getContext('webgl2', { antialias: false, alpha: false, depth: false, preserveDrawingBuffer: true });
+if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('no float targets');
+// 32-bit float targets are only filterable with this extension; without it they sample as black
+const FLOAT_LINEAR = !!gl.getExtension('OES_texture_float_linear');
+
+const COMMON = `#version 300 es
+precision highp float; precision highp int;
+#define PI 3.14159265
+uniform vec2 uRes; uniform float uTime; uniform int uMode; uniform int uFrame; uniform sampler2D uPrev;
+uniform vec3 uRo, uTa; uniform float uFov, uFocus, uAper; uniform int uDbg; uniform int uMask;
+out vec4 o;
+`;
+
+const SCENE = `
+// ------------------------------------------------------------------ noise
+uint seed;
+uint pcg(uint v){ uint s = v * 747796405u + 2891336453u; uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u; return (w >> 22u) ^ w; }
+float rnd(){ seed = pcg(seed); return float(seed) * (1.0 / 4294967296.0); }
+float h11(float p){ p = fract(p * .1031); p *= p + 33.33; p *= p + p; return fract(p); }
+float h21(vec2 p){ vec3 q = fract(vec3(p.xyx) * .1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
+float h31(vec3 q){ q = fract(q * .1031); q += dot(q, q.zyx + 31.32); return fract((q.x + q.y) * q.z); }
+float vn(vec3 p){ vec3 i = floor(p), f = fract(p); f = f * f * (3. - 2. * f);
+  return mix(mix(mix(h31(i), h31(i + vec3(1,0,0)), f.x), mix(h31(i + vec3(0,1,0)), h31(i + vec3(1,1,0)), f.x), f.y),
+             mix(mix(h31(i + vec3(0,0,1)), h31(i + vec3(1,0,1)), f.x), mix(h31(i + vec3(0,1,1)), h31(i + vec3(1,1,1)), f.x), f.y), f.z); }
+float fbm(vec3 p){ float a = .5, s = 0.; for (int i = 0; i < 5; i++){ s += a * vn(p); p = p * 2.03 + vec3(1.7, 9.2, 3.1); a *= .5; } return s; }
+mat2 rot(float a){ float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }
+
+// ------------------------------------------------------------------ shapes
+float sdBox(vec3 p, vec3 b){ vec3 q = abs(p) - b; return length(max(q, 0.)) + min(max(q.x, max(q.y, q.z)), 0.); }
+float sdRBox(vec3 p, vec3 b, float r){ return sdBox(p, b - r) - r; }
+float sdCylX(vec3 p, float r, float h){ vec2 d = abs(vec2(length(p.yz), p.x)) - vec2(r, h); return min(max(d.x, d.y), 0.) + length(max(d, 0.)); }
+float sdCylY(vec3 p, float r, float h){ vec2 d = abs(vec2(length(p.xz), p.y)) - vec2(r, h); return min(max(d.x, d.y), 0.) + length(max(d, 0.)); }
+float sdCap(vec3 p, vec3 a, vec3 b, float r){ vec3 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba) / dot(ba, ba), 0., 1.); return length(pa - ba * h) - r; }
+float smin(float a, float b, float k){ float h = clamp(.5 + .5 * (b - a) / k, 0., 1.); return mix(b, a, h) - k * h * (1. - h); }
+vec2 opU(vec2 a, vec2 b){ return a.x < b.x ? a : b; }
+
+// ------------------------------------------------------------------ the set (cm)
+const vec3 CYL = vec3(.3, 2.7, -.6); const float CYL_R = 1., CYL_H = 2.9;
+const float COMB_Y = 3.3, PITCH = .3, TIP_Z = .3, BASE_Z = 2.15;
+const vec3 CANDLE = vec3(-11.5, 0., -1.5);
+const vec3 FLAME = vec3(-11.5, 9.3, -1.5);
+const float LID_A = -1.92;           // the lid stands open, leaning back
+const vec3 WIN_C = vec3(-6., 19., -45.5); const vec2 WIN_H = vec2(9.5, 13.5);
+
+bool broken(float i){ return i == 4. || i == 9. || i == 13.; }
+
+vec2 mapBox(vec3 p){
+  vec2 r = vec2(1e5, 0.);
+  float outer = sdRBox(p - vec3(0, 2.1, 0), vec3(6, 2.1, 4), .2);
+  float inner = sdBox(p - vec3(0, 3.0, 0), vec3(5.45, 2.4, 3.45));
+  r = opU(r, vec2(max(outer, -inner), 2.));
+  // the lid, hinged on the back edge, lined with velvet
+  vec3 q = p - vec3(0, 4.2, -4); q.yz = rot(LID_A) * q.yz;
+  r = opU(r, vec2(sdRBox(q - vec3(0, .55, 4), vec3(6, .55, 4), .2), 2.));
+  r = opU(r, vec2(sdRBox(q - vec3(0, -.02, 4), vec3(5.35, .08, 3.35), .06), 3.));
+  // velvet floor
+  r = opU(r, vec2(sdBox(p - vec3(0, .7, 0), vec3(5.45, .1, 3.45)), 3.));
+  if (sdBox(p - vec3(.3, 2.6, -.2), vec3(5.8, 2.4, 3.6)) > .5) return r;
+  // brass bed plate
+  r = opU(r, vec2(sdRBox(p - vec3(.3, 1.25, -.2), vec3(4.9, .12, 3.0), .05), 4.));
+  // the pinned cylinder
+  vec3 c = p - CYL;
+  float cyl = sdCylX(c, CYL_R, CYL_H);
+  float rr = length(c.yz), a = atan(c.z, c.y), cell = 2. * PI / 56.;
+  float ia = floor(a / cell), la = (fract(a / cell) - .5) * cell * rr;
+  float ix = clamp(floor((c.x + 2.55) / PITCH + .5), 0., 17.), lx = c.x + 2.55 - ix * PITCH;
+  float pin = 1e5;
+  if (h21(vec2(ix, ia)) > .8 && abs(c.x) < 2.75) pin = max(length(vec2(lx, la)) - .032, abs(rr - CYL_R - .045) - .045);
+  // end rings and the great gear
+  float ring = max(abs(abs(c.x) - CYL_H + .05) - .07, rr - CYL_R - .06);
+  vec3 g = c - vec3(CYL_H + .25, 0, 0);
+  float gr = length(g.yz), ga = atan(g.z, g.y);
+  float gear = max(gr - 1.32 - .09 * smoothstep(-.3, .3, cos(ga * 40.)), abs(g.x) - .07);
+  float spokes = max(gr - 1.05, abs(cos(ga * 3.) * gr) - .12 + 1e-3 * 0.); // three windows between spokes
+  gear = max(gear, -max(max(gr - 1.0, .32 - gr), (abs(sin(ga * 1.5)) - .35) * gr));
+  r = opU(r, vec2(min(min(cyl, pin), min(ring, gear)), 4.));
+  r = opU(r, vec2(sdCylX(c, .12, CYL_H + .7), 5.));  // the arbor
+  r = opU(r, vec2(sdRBox(p - vec3(CYL.x - CYL_H - .4, 2.0, CYL.z), vec3(.14, .85, .55), .04), 4.));
+  r = opU(r, vec2(sdRBox(p - vec3(CYL.x + CYL_H + .6, 2.0, CYL.z), vec3(.14, .85, .55), .04), 4.));
+  // spring barrel and its ratchet
+  vec3 sb = p - vec3(-3.9, 1.95, -2.35);
+  float barrel = sdCylY(sb, .85, .55) - .02;
+  float ratchet = sdCylY(sb - vec3(0, .62, 0), .6 + .05 * smoothstep(-.3, .3, sin(atan(sb.z, sb.x) * 14.)), .07) * .8;
+  r = opU(r, vec2(min(barrel, ratchet), 4.));
+  // the comb: steel, screwed to a block
+  r = opU(r, vec2(sdRBox(p - vec3(CYL.x, COMB_Y + .05, 2.6), vec3(2.85, .2, .45), .04), 5.));
+  vec3 sp = p - vec3(CYL.x, COMB_Y + .25, 2.62); sp.x -= clamp(floor(sp.x / 2.2 + .5), -1., 1.) * 2.2;
+  float screw = max(length(sp) - .17, -sp.y);
+  screw = max(screw, -sdBox(sp - vec3(0, .17, 0), vec3(.17, .03, .02)));
+  r = opU(r, vec2(screw, 4.));
+  float tx = p.x - (CYL.x - 2.55);
+  float it = clamp(floor(tx / PITCH + .5), 0., 17.), lt = tx - it * PITCH;
+  bool bk = broken(it);
+  float len = bk ? .5 + .35 * h11(it * 7.1) : BASE_Z - TIP_Z;
+  float tooth = sdBox(vec3(lt, p.y - COMB_Y, p.z - (BASE_Z - len * .5)), vec3(.1, .042, len * .5));
+  if (bk) tooth += .025 * smoothstep(BASE_Z - len + .12, BASE_Z - len, p.z) * (vn(p * 38.) - .3);
+  r = opU(r, vec2(tooth * .8, 5.));
+  return r;
+}
+
+vec2 mapKey(vec3 p){   // the winding key, outside the right wall
+  vec3 k = p - vec3(6.2, 2.6, .4);
+  float shaft = sdCylX(k - vec3(.45, 0, 0), .11, .45);
+  vec3 w = k - vec3(1.0, 0, 0);
+  float wing = sdRBox(w, vec3(.07, 1.05, .32), .06);
+  float lobes = length(vec2(abs(w.y) - .75, w.z)) - .42;
+  wing = max(min(wing, lobes), abs(w.x) - .07);
+  return vec2(min(shaft, wing - .01), 4.);
+}
+
+vec2 mapCandle(vec3 p){
+  vec3 q = p - CANDLE;
+  if (length(q.xz) > 3.2 || q.y > 9.2) return vec2(max(length(q.xz) - 3., q.y - 9.), 0.);
+  float dish = sdCylY(q - vec3(0, .12, 0), 2.6, .12) - .03;
+  float rim = length(vec2(length(q.xz) - 2.6, q.y - .28)) - .11;
+  vec2 r = vec2(min(dish, rim), 4.);
+  float rad = 1.45 + .03 * vn(q * vec3(2., .6, 2.));
+  float wax = sdCylY(q - vec3(0, 4.2, 0), rad, 3.8);
+  wax = max(wax, -(length(q - vec3(0, 10.25, 0)) - 2.6));
+  for (int k = 0; k < 4; k++) {   // drips that ran and set
+    float a = float(k) * 1.9 + .4, l = 1.2 + 2.4 * h11(float(k) + 3.);
+    vec3 d = vec3(cos(a) * 1.47, 8.0, sin(a) * 1.47);
+    wax = smin(wax, sdCap(q, d, d - vec3(0, l, 0), .13 + .05 * h11(float(k))), .25);
+  }
+  r = opU(r, vec2(wax, 6.));
+  r = opU(r, vec2(sdCap(q, vec3(0, 7.6, 0), vec3(.1, 8.6, .03), .045), 7.));
+  return r;
+}
+
+vec2 mapRoom(vec3 p){
+  vec2 r = vec2(p.y, 1.);
+  float wall = max(p.z + 45., -sdBox(p - WIN_C, vec3(WIN_H + .9, 4.)));
+  r = opU(r, vec2(wall, 8.));
+  vec3 w = p - WIN_C;
+  float frame = max(sdBox(w, vec3(WIN_H + .9, .7)), -sdBox(w, vec3(WIN_H, 2.)));
+  float mull = min(sdBox(w, vec3(.3, WIN_H.y, .45)), sdBox(w - vec3(0, 2.5, 0), vec3(WIN_H.x, .3, .45)));
+  r = opU(r, vec2(min(frame, mull), 9.));
+  return r;
+}
+
+int gMask = 7;
+vec2 map(vec3 p){
+  vec2 r = (gMask & 1) != 0 ? mapRoom(p) : vec2(1e5, 0);
+  if ((gMask & 2) != 0 && sdBox(p - vec3(0, 5, -2), vec3(8.5, 7., 7.)) < r.x) { r = opU(r, mapBox(p)); r = opU(r, mapKey(p)); }
+  if ((gMask & 4) != 0) r = opU(r, mapCandle(p));
+  return r;
+}
+
+vec3 nrm(vec3 p){ const vec2 e = vec2(.0015, -.0015);
+  return normalize(vec3(0, 1e-6, 0) + e.xyy * map(p + e.xyy).x + e.yyx * map(p + e.yyx).x + e.yxy * map(p + e.yxy).x + e.xxx * map(p + e.xxx).x); }
+
+vec2 march(vec3 ro, vec3 rd, float tmax, int steps){
+  float t = .002;
+  for (int i = 0; i < 260; i++){
+    if (i >= steps) break;
+    vec2 h = map(ro + rd * t);
+    if (abs(h.x) < .00025 * t + .0002) return vec2(t, h.y);
+    t += h.x * .9;
+    if (t > tmax) break;
+  }
+  return vec2(-1., 0.);
+}
+float shadow(vec3 ro, vec3 rd, float tmax, float k){   // soft shadow from an area light (cone approximation)
+  // soft shadow from the flame: the closest approach of the ray to the scene, seen from the receiver,
+  // against the angular size of the light; small steps so that thin edges cannot slip between samples
+  float res = 1., t = .05;
+  for (int i = 0; i < 220; i++){
+    float h = map(ro + rd * t).x;
+    if (h < .0004) return 0.;
+    res = min(res, k * h / t);
+    t += clamp(h, .004, .25);
+    if (t > tmax) break;
+  }
+  res = clamp(res, 0., 1.);
+  return res * res * (3. - 2. * res);
+  return clamp(res, 0., 1.);
+}
+float hard(vec3 ro, vec3 rd, float tmax){
+  float t = .05;
+  for (int i = 0; i < 128; i++){ float h = map(ro + rd * t).x; if (h < .0004) return 0.; t += h; if (t > tmax) return 1.; }
+  return 1.;
+}
+
+// ------------------------------------------------------------------ materials
+struct Mat { vec3 alb; float rough; float metal; vec3 emit; float sheen; float coat; };
+Mat material(vec3 p, vec3 n, float m){
+  Mat M; M.emit = vec3(0); M.sheen = 0.; M.coat = 0.; M.metal = 0.; M.rough = .5;
+  if (m < 1.5) {            // the table: old oak, waxed
+    vec3 q = p * vec3(.06, 1., .9);
+    // long grain along the planks, gently warped, with fine pores
+    float g = fbm(vec3(p.x * .035, p.z * 1.1 + .8 * fbm(vec3(p.x * .02, p.z * .2, 3.)), 7.)) * .8 + .2 * vn(vec3(p.x * .4, p.z * 9., 1.));
+    float plank = smoothstep(.0, .08, abs(fract(p.z / 14. + .5) - .5) * 14.);
+    M.alb = mix(vec3(.16, .085, .04), vec3(.34, .19, .09), g) * (.55 + .45 * plank);
+    M.rough = .32 + .25 * fbm(p * .7); M.coat = .6;
+  } else if (m < 2.5) {     // walnut box
+    float g = fbm(vec3(p.x * .25 + 2. * fbm(p * .3), p.y * 4., p.z * .25));
+    M.alb = mix(vec3(.07, .035, .018), vec3(.2, .1, .045), g); M.rough = .22; M.coat = 1.;
+  } else if (m < 3.5) {     // velvet
+    M.alb = vec3(.014, .022, .07) * (.8 + .4 * vn(p * 20.)); M.rough = 1.; M.sheen = 1.;   // midnight-blue velvet
+  } else if (m < 4.5) {     // brass, handled and a little tarnished
+    float t = fbm(p * 3.);
+    M.alb = mix(vec3(.95, .76, .42), vec3(.62, .45, .22), smoothstep(.45, .8, t)); M.metal = 1.;
+    M.rough = .16 + .22 * smoothstep(.4, .9, t) + .05 * vn(p * 60.);
+  } else if (m < 5.5) {     // spring steel, brushed along the teeth
+    M.alb = vec3(.66, .66, .68); M.metal = 1.; M.rough = .12 + .06 * vn(vec3(p.x * 40., p.y * 40., p.z * 2.));
+  } else if (m < 6.5) {     // beeswax: light travels inside it, it glows near the flame
+    M.alb = vec3(.93, .84, .66); M.rough = .45;
+    float up = clamp((p.y - CANDLE.y) / 8., 0., 1.), d = length(p - FLAME);
+    M.emit = vec3(1., .45, .12) * (.9 * exp(-max(0., d - 1.2) * 2.2) + .08 * pow(up, 6.));
+  } else if (m < 7.5) {     // the wick, its tip a coal
+    M.alb = vec3(.02); M.rough = .9; M.emit = vec3(1.5, .4, .1) * 6. * smoothstep(8.35, 8.6, p.y);
+  } else if (m < 8.5) {     // plaster
+    M.alb = vec3(.2, .17, .15) * (.8 + .3 * fbm(p * .3)); M.rough = .9;
+  } else {                  // painted window frame
+    M.alb = vec3(.1, .07, .05); M.rough = .5;
+  }
+  return M;
+}
+
+// ------------------------------------------------------------------ lights
+const vec3 FLAME_COL = vec3(1., .58, .26);
+const float FLAME_POW = 900., FLAME_R = .38;
+// the night beyond the glass: deep blue, snow falling, frost creeping in from the corners
+vec3 outside(vec3 ro, vec3 rd){
+  if (rd.z > -.05) return vec3(.0006, .0005, .0004);
+  float t = (WIN_C.z - ro.z) / rd.z; vec3 p = ro + rd * t;
+  vec2 w = (p.xy - WIN_C.xy) / WIN_H;
+  if (abs(w.x) > 1. || abs(w.y) > 1.) return vec3(.0006, .0005, .0004);
+  float t2 = (-140. - ro.z) / rd.z; vec3 q = ro + rd * t2;
+  vec3 sky = mix(vec3(.010, .020, .055), vec3(.03, .05, .11), smoothstep(-20., 80., q.y)) * 5.;
+  // distant village lights low in the frame
+  vec2 c = floor(q.xy / vec2(6., 3.)); vec2 f = fract(q.xy / vec2(6., 3.)) - .5;
+  if (q.y < 12. && h21(c) > .75) sky += vec3(1.2, .6, .25) * 3. * smoothstep(.12, .0, length(f * vec2(1., 2.)));
+  // snow: flakes on a few planes between the window and the village
+  for (int k = 0; k < 3; k++){
+    float zk = -55. - float(k) * 18.; float tk = (zk - ro.z) / rd.z; vec3 s = ro + rd * tk;
+    vec2 cs = floor(s.xy / 1.6); vec2 fs = fract(s.xy / 1.6) - .5 + (vec2(h21(cs), h21(cs + 7.)) - .5) * .7;
+    if (h21(cs + float(k) * 13.) > .55) sky += vec3(.6, .7, .9) * .5 * smoothstep(.09, .0, length(fs));
+  }
+  float frost = smoothstep(.55, 1.05, max(abs(w.x), abs(w.y)) + .35 * fbm(vec3(p.xy * .35, 1.)) + .25 * (fbm(vec3(p.xy * 2.2, 4.)) - .5));
+  return mix(sky, vec3(.10, .14, .22) * 1.8, frost);
+}
+
+// a teardrop of hot gas: blue at its root, white in the body, orange at the tip
+vec3 flameAlong(vec3 ro, vec3 rd, float tmax){
+  vec3 oc = ro - (FLAME + vec3(0, .1, 0)); float b = dot(oc, rd), c = dot(oc, oc) - 1.6 * 1.6, h = b * b - c;
+  if (h < 0.) return vec3(0);
+  h = sqrt(h); float t0 = max(-b - h, 0.), t1 = min(-b + h, tmax);
+  if (t1 <= t0) return vec3(0);
+  vec3 acc = vec3(0); float dt = (t1 - t0) / 32.;
+  for (int i = 0; i < 32; i++){
+    vec3 p = ro + rd * (t0 + (float(i) + .5) * dt) - FLAME;
+    float y = p.y + .55, w = .26 * sqrt(max(y, 0.)) * (1. - smoothstep(.2, 1.55, y)) * 1.35 + .02;
+    float sway = .03 * sin(uTime * 7. + y * 3.);
+    float d = length(vec2(p.x - sway * y, p.z)) / max(w, 1e-3);
+    float body = smoothstep(1., .25, d) * smoothstep(-.05, .1, y) * smoothstep(1.9, 1.1, y);
+    float core = smoothstep(.75, .0, d) * smoothstep(.0, .35, y) * smoothstep(1.2, .5, y);
+    float root = smoothstep(1., .3, d) * smoothstep(.35, .05, y) * smoothstep(-.1, .05, y);
+    vec3 col = vec3(1., .40, .09) * body * 3.5 + vec3(1., .82, .55) * core * 9. + vec3(.15, .3, 1.) * root * 2.5;
+    acc += col * dt;
+  }
+  return acc;
+}
+
+// ------------------------------------------------------------------ BRDF
+float D_ggx(float nh, float a){ nh = min(nh, 1.); float a2 = a * a, d = nh * nh * (a2 - 1.) + 1.; return a2 / (PI * d * d); }
+float G_sch(float nv, float nl, float a){ float k = a * .5; return nv / (nv * (1. - k) + k) * nl / (nl * (1. - k) + k); }
+vec3 F_sch(vec3 f0, float vh){ return f0 + (1. - f0) * pow(clamp(1. - vh, 0., 1.), 5.); }
+vec3 brdf(Mat M, vec3 n, vec3 v, vec3 l){
+  vec3 h = normalize(v + l); float nl = max(dot(n, l), 0.), nv = max(dot(n, v), 1e-3), nh = max(dot(n, h), 0.), vh = max(dot(v, h), 0.);
+  float a = max(M.rough * M.rough, .002);
+  vec3 f0 = mix(vec3(.04), M.alb, M.metal);
+  vec3 F = F_sch(f0, vh);
+  vec3 spec = D_ggx(nh, a) * G_sch(nv, nl, a) * F / (4. * nv * max(nl, 1e-3));
+  vec3 diff = (1. - M.metal) * (1. - F) * M.alb / PI;
+  if (M.sheen > 0.) diff += M.alb * 1.6 * pow(clamp(1. - nv, 0., 1.), 4.) / PI;          // velvet catches light at grazing angles
+  if (M.coat > 0.) spec += M.coat * D_ggx(nh, .11 * .11) * .25 * F_sch(vec3(.04), vh).x / (4. * nv * max(nl, 1e-3) + 1e-3) * G_sch(nv, nl, .11);
+  return diff + spec;
+}
+`;
+
+const RT = `
+// one direct-lighting evaluation: candle (soft), moonlight through the window (soft), a dim bounce
+vec3 direct(vec3 p, vec3 n, vec3 v, Mat M, bool cheap){
+  vec3 col = M.emit;
+  vec3 L = FLAME - p; float d2 = dot(L, L), d = sqrt(d2); vec3 l = L / d;
+  float nl = dot(n, l);
+  float sh = nl > 0. ? shadow(p + n * .03, l, d - 1.6, d / (FLAME_R * 1.6)) : 0.;
+  col += brdf(M, n, v, l) * FLAME_COL * FLAME_POW / d2 * max(nl, 0.) * sh;
+  vec3 W = WIN_C - p; vec3 lw = normalize(W);
+  float nw = dot(n, lw);
+  if (nw > 0.) { float s = cheap ? 1. : shadow(p + n * .03, lw, 60., 6.); col += brdf(M, n, v, lw) * vec3(.05, .08, .16) * 1.6 * nw * s; }
+  // a warm bounce from the table and the room, scaled by a short-range occlusion
+  float ao = 0., sc = 1.;
+  for (int i = 1; i < 5; i++){ float h = .06 * float(i) * float(i); ao += (h - map(p + n * h).x) * sc; sc *= .7; }
+  ao = clamp(1. - 2.2 * ao, 0., 1.);
+  col += M.alb * (1. - M.metal) * vec3(.03, .018, .01) * (.4 + .6 * n.y) * ao * 3. / (1. + .004 * d2);
+  // metals see the warm room in their rough lobe
+  col += M.alb * M.metal * vec3(.02, .012, .006) * ao * (1. + 2. * M.rough);
+  return col;
+}
+vec3 render(vec3 ro, vec3 rd){
+  vec2 h = march(ro, rd, 200., 220);
+  vec3 col;
+  if (h.x < 0.) col = outside(ro, rd);
+  else {
+    vec3 p = ro + rd * h.x, n = nrm(p), v = -rd;
+    Mat M = material(p, n, h.y);
+    col = direct(p, n, v, M, false);
+    // one reflection bounce for metals and the waxed woods
+    float ks = M.metal > .5 ? 1. : M.coat * .25;
+    if (ks > 0.) {
+      vec3 r = reflect(rd, n);
+      vec2 h2 = march(p + n * .01, r, 80., 120);
+      vec3 rc;
+      if (h2.x < 0.) rc = outside(p, r); else { vec3 p2 = p + r * h2.x; vec3 n2 = nrm(p2); rc = direct(p2, n2, -r, material(p2, n2, h2.y), true); }
+      rc += flameAlong(p, r, h2.x < 0. ? 1e3 : h2.x);
+      vec3 f0 = mix(vec3(.04), M.alb, M.metal);
+      vec3 F = F_sch(f0, max(dot(n, v), 0.));
+      col += rc * F * ks * (1. - .7 * M.rough);
+    }
+  }
+  col += flameAlong(ro, rd, h.x < 0. ? 1e3 : h.x);
+  return col;
+}
+void main(){
+  vec2 uv = (gl_FragCoord.xy - .5 * uRes) / uRes.y;
+  vec3 f = normalize(uTa - uRo), r = normalize(cross(f, vec3(0, 1, 0))), u = cross(r, f);
+  vec3 rd = normalize(f * uFov + uv.x * r + uv.y * u);
+  if (uDbg > 0 && uDbg < 9) {   // look-dev diagnostics: 1 normals, 2 candle shadow, 3 materials, 4 distance
+    vec2 h = march(uRo, rd, 200., 220); if (h.x < 0.) { o = vec4(0, 0, .2, 1); return; }
+    vec3 p = uRo + rd * h.x, n = nrm(p); vec3 L = FLAME - p; float d = length(L);
+    if (uDbg == 1) o = vec4(n * .5 + .5, 1);
+    else if (uDbg == 2) { gMask = uMask; o = vec4(vec3(shadow(p + n * .03, L / d, d - 1.6, d / (FLAME_R * 1.6))), 1); }
+    else if (uDbg == 5) o = vec4(vec3(hard(p + n * .03, L / d, d - .6)), 1);
+    else if (uDbg == 6) { float t = .05; int i = 0; for (; i < 128; i++){ float hh = map(p + n * .03 + L / d * t).x; if (hh < .0004 || t > d - .6) break; t += hh; } o = vec4(float(i) / 128., t / d, map(p + n * .03 + L / d * t).y / 9., 1); }
+    else if (uDbg == 3) o = vec4(.5 + .5 * cos(h.y * 1.7 + vec3(0, 2, 4)), 1);
+    else o = vec4(vec3(fract(h.x / 10.)), 1);
+    return;
+  }
+  vec3 c = render(uRo, rd);
+  // never let one bad pixel poison the bloom chain; dbg=9 paints them instead
+  bool bad = any(isnan(c)) || any(isinf(c));
+  o = vec4(bad ? (uDbg == 9 ? vec3(50, 0, 50) : vec3(0)) : c, 1.);
+}
+`;
+
+const PT = `
+// a path tracer over the same scene: next-event estimation to the candle and to the window,
+// cosine and GGX importance sampling, Russian roulette, a thin lens with real depth of field
+vec3 cosDir(vec3 n){ float a = 2. * PI * rnd(), b = rnd(); vec3 t = normalize(cross(n, abs(n.y) < .9 ? vec3(0, 1, 0) : vec3(1, 0, 0))), s = cross(n, t); float r = sqrt(b); return normalize(t * r * cos(a) + s * r * sin(a) + n * sqrt(1. - b)); }
+vec3 ggxH(vec3 n, float a){ float u = rnd(), w = rnd(); float ct = sqrt((1. - u) / (1. + (a * a - 1.) * u)), st = sqrt(1. - ct * ct), ph = 2. * PI * w; vec3 t = normalize(cross(n, abs(n.y) < .9 ? vec3(0, 1, 0) : vec3(1, 0, 0))), s = cross(n, t); return normalize(t * st * cos(ph) + s * st * sin(ph) + n * ct); }
+vec3 trace(vec3 ro, vec3 rd){
+  vec3 acc = vec3(0), thr = vec3(1);
+  bool specular = true;
+  for (int b = 0; b < 5; b++){
+    vec2 h = march(ro, rd, 200., b == 0 ? 240 : 140);
+    if (b == 0 || specular) acc += thr * flameAlong(ro, rd, h.x < 0. ? 1e3 : h.x);
+    if (h.x < 0.) { if (specular) acc += thr * outside(ro, rd); break; }
+    vec3 p = ro + rd * h.x, n = nrm(p), v = -rd;
+    Mat M = material(p, n, h.y);
+    acc += b == 0 ? thr * M.emit : min(thr * M.emit, vec3(4.));
+    vec3 pn = p + n * .03;
+    // the candle: a small glowing sphere
+    vec3 lp = FLAME + FLAME_R * normalize(vec3(rnd(), rnd(), rnd()) * 2. - 1.);
+    vec3 L = lp - p; float d2 = dot(L, L), d = sqrt(d2); vec3 l = L / d;
+    float nl = dot(n, l);
+    if (nl > 0. && hard(pn, l, d - 1.6) > .5) { vec3 c = thr * brdf(M, n, v, l) * FLAME_COL * FLAME_POW / d2 * nl; acc += b == 0 ? min(c, vec3(40.)) : min(c, vec3(3.)); }
+    // the window: an area of night sky
+    vec2 wq = (vec2(rnd(), rnd()) * 2. - 1.) * WIN_H; vec3 wp = WIN_C + vec3(wq, 0);
+    vec3 Lw = wp - p; float dw2 = dot(Lw, Lw), dw = sqrt(dw2); vec3 lw = Lw / dw;
+    float nw = dot(n, lw), cw = -lw.z;
+    if (nw > 0. && cw > 0. && hard(pn, lw, dw - 1.) > .5) {
+      vec3 Le = outside(p, lw);
+      acc += thr * brdf(M, n, v, lw) * Le * nw * cw * (4. * WIN_H.x * WIN_H.y) / dw2;
+    }
+    // continue the path
+    float a = max(M.rough * M.rough, .002);
+    vec3 f0 = mix(vec3(.04), M.alb, M.metal);
+    float ps = M.metal > .5 ? 1. : clamp(.08 + .25 * M.coat, 0., .5);
+    if (rnd() < ps) {
+      float aa = M.metal > .5 ? a : .11 * .11 + (1. - M.coat) * a;
+      vec3 hv = ggxH(n, aa); vec3 nd = reflect(rd, hv);
+      float nd_n = dot(nd, n); if (nd_n <= 0.) break;
+      float vh = max(dot(v, hv), 1e-3), nh = max(dot(n, hv), 1e-3), nv = max(dot(n, v), 1e-3);
+      vec3 F = M.metal > .5 ? F_sch(f0, vh) : vec3(F_sch(vec3(.04), vh).x);
+      thr *= F * G_sch(nv, nd_n, aa) * vh / (nh * nv) / ps;
+      specular = aa < .002; rd = nd;
+    } else {
+      rd = cosDir(n);
+      thr *= (1. - M.metal) * M.alb * (M.sheen > 0. ? 1.3 : 1.) / (1. - ps);
+      specular = false;
+    }
+    ro = pn;
+    if (b >= 2) { float q = clamp(max(thr.r, max(thr.g, thr.b)), .05, 1.); if (rnd() > q) break; thr /= q; }
+  }
+  return acc;
+}
+void main(){
+  seed = uint(gl_FragCoord.x) * 1973u + uint(gl_FragCoord.y) * 9277u + uint(uFrame) * 26699u | 1u;
+  vec2 jit = vec2(rnd(), rnd()) - .5;
+  vec2 uv = (gl_FragCoord.xy + jit - .5 * uRes) / uRes.y;
+  vec3 f = normalize(uTa - uRo), r = normalize(cross(f, vec3(0, 1, 0))), u = cross(r, f);
+  vec3 rd = normalize(f * uFov + uv.x * r + uv.y * u);
+  // thin lens
+  vec3 fp = uRo + rd * (uFocus / dot(rd, f));
+  float la = 2. * PI * rnd(), lr = uAper * sqrt(rnd());
+  vec3 ro = uRo + (r * cos(la) + u * sin(la)) * lr;
+  vec3 c = trace(ro, normalize(fp - ro));
+  if (any(isnan(c)) || any(isinf(c))) c = vec3(0);
+  c = min(c, vec3(18.));   // clamp rare fireflies
+  vec4 prev = uFrame > 0 ? texelFetch(uPrev, ivec2(gl_FragCoord.xy), 0) : vec4(0);
+  o = prev + vec4(c, 1.);
+}
+`;
+
+// ---- post: bloom chain + filmic finish
+const VS = `#version 300 es
+void main(){ vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2. - 1., 0, 1); }`;
+const DOWN = `#version 300 es
+precision highp float; uniform sampler2D uSrc; uniform vec2 uTexel; uniform float uNorm; uniform int uFirst; out vec4 o;
+void main(){ vec2 uv = gl_FragCoord.xy * 2. * uTexel;
+  vec3 c = (texture(uSrc, uv + uTexel * vec2(-1,-1)).rgb + texture(uSrc, uv + uTexel * vec2(1,-1)).rgb + texture(uSrc, uv + uTexel * vec2(-1,1)).rgb + texture(uSrc, uv + uTexel * vec2(1,1)).rgb) * .25;
+  if (uFirst == 1) { c *= uNorm; c *= smoothstep(.6, 2.5, max(c.r, max(c.g, c.b))); }
+  o = vec4(c, 1); }`;
+const UP = `#version 300 es
+precision highp float; uniform sampler2D uSmall, uBig; uniform vec2 uTexel; out vec4 o;
+void main(){ vec2 uv = gl_FragCoord.xy * uTexel; vec2 t = uTexel;
+  vec3 s = vec3(0);
+  s += texture(uSmall, uv + t * vec2(-1,-1)).rgb + texture(uSmall, uv + t * vec2(1,-1)).rgb + texture(uSmall, uv + t * vec2(-1,1)).rgb + texture(uSmall, uv + t * vec2(1,1)).rgb;
+  s += 2. * (texture(uSmall, uv + t * vec2(0,-1)).rgb + texture(uSmall, uv + t * vec2(0,1)).rgb + texture(uSmall, uv + t * vec2(-1,0)).rgb + texture(uSmall, uv + t * vec2(1,0)).rgb);
+  s += 4. * texture(uSmall, uv).rgb;
+  o = vec4(texture(uBig, uv).rgb + s / 16., 1); }`;
+const FINAL = `#version 300 es
+precision highp float; uniform sampler2D uHdr, uBloom; uniform vec2 uRes; uniform float uNorm, uExpo; uniform int uFrame; out vec4 o;
+vec3 aces(vec3 x){ const mat3 A = mat3(.59719,.07600,.02840,.35458,.90834,.13383,.04823,.01566,.83777); const mat3 B = mat3(1.60475,-.10208,-.00327,-.53108,1.10813,-.07276,-.07367,-.00605,1.07602);
+  x = A * x; vec3 a = x * (x + .0245786) - .000090537, b = x * (.983729 * x + .4329510) + .238081; return clamp(B * (a / b), 0., 1.); }
+float hash(vec2 p){ vec3 q = fract(vec3(p.xyx) * .1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes, d = uv - .5;
+  // a touch of lateral colour toward the edges, as real glass does
+  float ca = .0018 * dot(d, d) * 4.;
+  vec3 c = vec3(texture(uHdr, uv - d * ca).r, texture(uHdr, uv).g, texture(uHdr, uv + d * ca).b) * uNorm;
+  c += texture(uBloom, uv).rgb * .09;
+  c *= uExpo;
+  c *= 1. - .55 * pow(length(d * vec2(1., .8)) * 1.35, 2.5);   // vignette
+  c = aces(c);
+  c = pow(c, vec3(1. / 2.2));
+  c += (hash(gl_FragCoord.xy + float(uFrame) * 17.) - .5) * .018;   // film grain
+  o = vec4(c, 1);
+}`;
+
+function sh(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { const log = gl.getShaderInfoLog(s); window.__ERR = log; throw new Error(log); } return s; }
+function prog(fs) { const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) { window.__ERR = gl.getProgramInfoLog(p); throw new Error(window.__ERR); } const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS); for (let i = 0; i < n; i++) { const a = gl.getActiveUniform(p, i); u[a.name] = gl.getUniformLocation(p, a.name); } return { p, u }; }
+function tex(w, h, fmt, ifmt) { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, gl.RGBA, gl.FLOAT, null); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0); return { t, f, w, h }; }
+
+const scene = prog(COMMON + SCENE + (MODE ? PT : RT)), down = prog(DOWN), up = prog(UP), fin = prog(FINAL);
+const acc = [tex(W, H, 0, gl.RGBA32F), tex(W, H, 0, gl.RGBA32F)];
+if (!FLOAT_LINEAR) for (const a of acc) { gl.bindTexture(gl.TEXTURE_2D, a.t); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); }
+const mips = []; { let w = W, h = H; for (let i = 0; i < 6; i++) { w = Math.max(1, w >> 1); h = Math.max(1, h >> 1); mips.push({ d: tex(w, h, 0, gl.RGBA16F), u: tex(w, h, 0, gl.RGBA16F) }); } }
+gl.bindVertexArray(gl.createVertexArray());
+
+// the shot: a three-quarter view down onto the comb, the candle on the left, the window behind
+const CAM = { ro: [Q.get('cx') ? +Q.get('cx') : 11, Q.get('cy') ? +Q.get('cy') : 21, Q.get('cz') ? +Q.get('cz') : 19], ta: [Q.get('tx') ? +Q.get('tx') : -1.2, Q.get('ty') ? +Q.get('ty') : 3.0, Q.get('tz') ? +Q.get('tz') : .6], fov: +(Q.get('fov') || 2.2), aper: .32 };
+const focus = Math.hypot(CAM.ro[0] - .3, CAM.ro[1] - 3.3, CAM.ro[2] - 1.3);
+let frame = 0, cur = 0;
+function pass(target, w, h) { gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.f : null); gl.viewport(0, 0, w, h); gl.drawArrays(gl.TRIANGLES, 0, 3); }
+function renderScene(t) {
+  gl.useProgram(scene.p); const u = scene.u;
+  gl.uniform2f(u.uRes, W, H); gl.uniform1f(u.uTime, t); gl.uniform1i(u.uMode, MODE); gl.uniform1i(u.uFrame, frame);
+  if (u.uDbg) gl.uniform1i(u.uDbg, +(Q.get('dbg') || 0)); if (u.uMask) gl.uniform1i(u.uMask, +(Q.get('mask') || 7));
+  gl.uniform3fv(u.uRo, CAM.ro); gl.uniform3fv(u.uTa, CAM.ta); gl.uniform1f(u.uFov, CAM.fov);
+  if (u.uFocus) { gl.uniform1f(u.uFocus, focus); gl.uniform1f(u.uAper, CAM.aper); }
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, acc[cur].t); if (u.uPrev) gl.uniform1i(u.uPrev, 0);
+  pass(acc[1 - cur], W, H); cur = 1 - cur; frame++;
+}
+function post() {
+  const norm = MODE ? 1 / frame : 1, src = acc[cur];
+  gl.useProgram(down.p);
+  let prev = src;
+  for (let i = 0; i < mips.length; i++) { const m = mips[i]; gl.uniform1i(down.u.uFirst, i === 0 ? 1 : 0); gl.uniform1f(down.u.uNorm, norm); gl.uniform2f(down.u.uTexel, 1 / prev.w, 1 / prev.h); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, prev.t); gl.uniform1i(down.u.uSrc, 0); pass(m.d, m.d.w, m.d.h); prev = m.d; }
+  gl.useProgram(up.p);
+  let small = mips[mips.length - 1].d;
+  for (let i = mips.length - 2; i >= 0; i--) { const m = mips[i]; gl.uniform2f(up.u.uTexel, 1 / m.u.w, 1 / m.u.h); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, small.t); gl.uniform1i(up.u.uSmall, 0); gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, m.d.t); gl.uniform1i(up.u.uBig, 1); pass(m.u, m.u.w, m.u.h); small = m.u; }
+  gl.useProgram(fin.p);
+  gl.uniform2f(fin.u.uRes, W, H); gl.uniform1f(fin.u.uNorm, norm); gl.uniform1f(fin.u.uExpo, +(Q.get('expo') || 1.1)); gl.uniform1i(fin.u.uFrame, frame);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src.t); gl.uniform1i(fin.u.uHdr, 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, small.t); gl.uniform1i(fin.u.uBloom, 1);
+  pass(null, W, H);
+}
+// harness: render n samples (pt) or one frame at time t (rt), then finish the picture
+window.__render = (n, t = 1.3) => { const t0 = performance.now(); for (let i = 0; i < n; i++) { if (!MODE) frame = 0; renderScene(t); gl.finish(); } post(); gl.finish(); return { frames: frame, ms: performance.now() - t0 }; };
+window.__probe = (x, y) => { const px = new Float32Array(4); gl.bindFramebuffer(gl.FRAMEBUFFER, acc[cur].f); gl.readPixels(x, y, 1, 1, gl.RGBA, gl.FLOAT, px); return { err: gl.getError(), status: gl.checkFramebufferStatus(gl.FRAMEBUFFER), px: Array.from(px), frame }; };
+window.__READY = true;
+if (!Q.has('cap')) { const loop = now => { if (MODE) { renderScene(now / 1000); post(); } else { frame = 0; renderScene(now / 1000); post(); } requestAnimationFrame(loop); }; requestAnimationFrame(loop); }
+</script>
+</body>
+</html>
