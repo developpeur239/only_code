@@ -205,6 +205,18 @@ La fermeture brutale du modèle rend la voix 10 à 15 dB trop brillante, et l'ad
 déstabilise le couplage (sifflements parasites). Il faudra un modèle de muqueuse et une intégration implicite.
 **Par défaut, la source dessinée reste en place.**
 
+## Sélection des prises (tools/comp.py)
+
+6 prises par mot (tirages différents), Whisper garde la plus nette, Vosk (juge indépendant) mesure :
+
+| | a | i/é/u | ou | nasale | total |
+|---|---|---|---|---|---|
+| toutes les prises | 32 % | 44 % | 39 % | 40 % | 39 % |
+| meilleure prise par mot | 25 % | 58 % | 42 % | 50 % | 44 % |
+
+Gain modeste (+5 points, à la limite du bruit sur 48 mots) ; la marge moyenne de la meilleure prise reste négative pour Whisper :
+même la meilleure prise n'est en général pas assez claire. La sélection aidera à la fin, elle ne remplace pas la consonne.
+
 ## Pistes suivantes
 
 0. **Aérodynamique** (en cours) : débit d'air et pression dans le conduit, pour que friction, explosion et voisement pendant
