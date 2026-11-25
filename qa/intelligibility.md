@@ -41,6 +41,33 @@ Ce que les différents juges disent tous :
 - **/ʃ/ est entendu /s/ ou /f/.**
 - **Les voyelles antérieures et ouvertes se confondent** : i, y, e, ø sont entendues u ou « thé ».
 
+## Le juge sur une vraie voix
+
+Une voix humaine (le propriétaire du projet, 23 phrases dites deux fois, enregistrement utilisé **uniquement comme mesure**,
+jamais commité ni utilisé dans le film) :
+
+| juge | consonnes | voyelles |
+|---|---|---|
+| Whisper (vraisemblance) | 96 % | 82 % |
+| Vosk (liste fermée) | 100 % | 91 % |
+
+Le test fonctionne : l'écart avec nos voix est réel.
+
+## La greffe de prosodie
+
+Le grand-père redit les mêmes phrases avec le rythme, la mélodie et l'enveloppe d'intensité **mesurés** sur la voix humaine
+(`tools/transplant.js` ; seules trois courbes sont reprises, jamais le son) :
+
+| | consonnes Whisper | voyelles Whisper | consonnes Vosk | voyelles Vosk |
+|---|---|---|---|---|
+| grand-père, prosodie à la main | 19-25 % | 21 % | 22-31 % | 34-55 % |
+| grand-père, prosodie humaine greffée | 17 % | 32 % | 50 % | 64 % |
+| voix humaine | 96 % | 82 % | 100 % | 91 % |
+
+La prosodie aide, mais elle ne suffit pas. **Le cœur du problème, ce sont les articulations elles-mêmes** : les consonnes
+voisées restent entendues /l/, les occlusives sourdes /s/. Au spectrogramme, la voix humaine bouge en permanence
+(formants qui glissent, transitions longues et continues), la nôtre est faite de blocs stables reliés par des transitions brèves.
+
 ## Ce qui a été corrigé en chemin (mesuré)
 
 - **Plus aucun clic** : `tools/transients.js` vérifie toutes les consonnes sur 6 tirages (limite +11 dB au-dessus de la voyelle).
@@ -49,11 +76,8 @@ Ce que les différents juges disent tous :
 - Relâchements des occlusives aussi rapides que les fermetures (~10 ms), dévoisement anticipé avant une consonne sourde,
   explosions filtrées selon le lieu, /ʃ/ reculé et arrondi, murmure nasal plus sourd, consonnes allongées comme en diction chantée.
 
-## Prochaine étape
+## Prochaine étape : la synthèse par copie des articulations
 
-Le moteur sait produire chaque son, mais **les trajectoires des articulateurs sont réglées à la main**. Il faut une cible réelle :
-quelques phrases prononcées par une vraie voix, utilisées **uniquement comme mesure** (jamais dans le film), pour
-
-1. calibrer le juge sur de la parole naturelle (la vraie limite haute) ;
-2. faire de la **synthèse par copie** : ajuster les gestes du modèle jusqu'à ce que ses trajectoires de formants suivent celles de la voix réelle,
-   comme on a ajusté les voyelles sur des formants publiés.
+Ajuster automatiquement les gestes de chaque consonne (instants, vitesses, lieux, voisement, explosion) pour que la phrase
+synthétique se rapproche de la phrase humaine, mesuré par une distance spectrale (MFCC alignés par DTW), puis vérifier au juge.
+C'est la même méthode que pour les voyelles, étendue au mouvement.

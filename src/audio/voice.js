@@ -357,12 +357,14 @@ function sing(singer, syl, opts = {}) {
     const vibOn = s3((noteAge - sg.vib[2]) / .35) * (dur > .45 ? 1 : .25);
     vibAge += DT * sg.vib[0] * (1 + .08 * wVib());
     const cents = 100 * (sg.vib[1] * vibOn * Math.sin(TAU * vibAge)) + 100 * sg.tremor[1] * wTrem() + 100 * sg.drift * wDrift() + 6 * wJ();
-    const midi = ff0(note.midi) + cents / 100;
+    // opts.f0(t) / opts.amp(t): a pitch contour (Hz) and a loudness contour (0..1) to follow instead of the score (speech, copy-synthesis)
+    const f0o = opts.f0 ? opts.f0(t) : 0;
+    const midi = f0o > 0 ? 69 + 12 * Math.log2(f0o) - 12 * Math.log2(440) + .3 * cents / 100 : ff0(note.midi) + cents / 100;
     f0 = 440 * Math.pow(2, (midi - 69) / 12);
     // ---- source strength
     const dyn = note.dyn === undefined ? .6 : note.dyn;
     const decl = 1 - .25 * clamp((t - note.t0) / Math.max(.3, dur), 0, 1) * (dur > 1 ? 1 : .3);
-    const tEe = on * (.35 + .65 * dyn) * decl * (1 + .05 * wAmp()) * (1 - .6 * occl) * (1 - .45 * narrowF);
+    const tEe = on * (opts.amp ? opts.amp(t) : (.35 + .65 * dyn) * decl) * (1 + .05 * wAmp()) * (1 - .6 * occl) * (1 - .45 * narrowF);
     const tRd = sg.Rd + (1 - dyn) * .5 + (1 - on) * .8 + .08 * wRd();
     if (opts.trace) opts.trace.push([t, f0, tEe, tRd, ab, vel, cmin]);
     // ---- render the block
