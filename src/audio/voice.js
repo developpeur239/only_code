@@ -46,9 +46,9 @@ function wander(R, fc, DT) {
 // Rd: glottal relaxation (higher = breathier, softer), breath: aspiration, jitter/shimmer per period,
 // vib: rate (Hz), depth (semitones), delay (s); tremor: slow irregular wobble of the old voice
 const SINGERS = {
-  grandpa: { L: 17.6, nasal: 11.6, velum: .56, Rd: 1.15, breath: .05, jitter: .0035, shimmer: .03, vib: [5.0, .32, .30], tremor: [3.6, .10], drift: .06, seed: 11, wall: 1.0 },
-  grandma: { L: 15.2, nasal: 10.4, velum: .56, Rd: 1.05, breath: .07, jitter: .004, shimmer: .03, vib: [5.5, .36, .26], tremor: [4.2, .05], drift: .04, seed: 23, wall: .9 },
-  child:   { L: 12.0, nasal: 8.4,  velum: .55, Rd: 1.35, breath: .08, jitter: .003, shimmer: .03, vib: [5.8, .12, .45], tremor: [5.0, .02], drift: .03, seed: 37, wall: .8 },
+  grandpa: { L: 17.6, nasal: 11.6, velum: .56, Rd: 1.15, breath: .05, jitter: .0035, shimmer: .03, vib: [5.0, .32, .30], tremor: [3.6, .10], drift: .06, seed: 11, wall: 1.0, x0: 0 },
+  grandma: { L: 15.2, nasal: 10.4, velum: .56, Rd: 1.05, breath: .07, jitter: .004, shimmer: .03, vib: [5.5, .36, .26], tremor: [4.2, .05], drift: .04, seed: 23, wall: .9, x0: 0 },
+  child:   { L: 12.0, nasal: 8.4,  velum: .55, Rd: 1.35, breath: .08, jitter: .003, shimmer: .03, vib: [5.8, .12, .45], tremor: [5.0, .02], drift: .03, seed: 37, wall: .8, x0: 0 },
 };
 
 // ---------------------------------------------------------------- LF glottal pulse
@@ -207,6 +207,57 @@ function tick(T, Ug, rg, n1i, n1, n2i, n2) {
   return lipU + nosU + T.wallLP2 * T.sg.wall;
 }
 
+// ---------------------------------------------------------------- the vocal folds (two-mass model, Ishizaka & Flanagan 1972)
+// Each fold is two masses on springs, coupled to each other; air from the lungs (Bernoulli) pushes them apart, they collide
+// when they close, and the pressure just above the glottis (the tract's own) pushes back: source and tract interact.
+// Units cgs. Pitch: the tension factor Q scales stiffness up and mass down; a slow feedback keeps the period on target.
+// x0: rest half-width (cm) - nearly closed for voice, wide apart for a voiceless consonant or a breath.
+const RHO_AIR = .00114;
+let F0REF = 125;
+function Folds(sg) {
+  const sc = Math.sqrt(sg.L / 17.6);                      // smaller larynx for smaller singers
+  const P = { m1: .125 * sc, m2: .025 * sc, k1: 80000 * sc, k2: 8000 * sc, kc: 25000 * sc, d1: .25 * sc, d2: .05 * sc, lg: 1.4 * sc };
+  const st = { x1: 0, x2: 0, v1: 0, v2: 0, corr: 1, tPrev: -1, t: 0, lastV: 0, f0m: 0, U: 0, xm: 0, lo: 1e9, hi: -1e9 };
+  // pinc: pressure the tract sends back onto the glottis (twice the incoming wave), Z: the tract's entrance impedance.
+  // The flow and the pressure above the glottis are solved together (the flow makes that pressure): U^2 + bU - c = 0.
+  st.step = (Ps, pinc, Z, x0, f0t, dt) => {
+    const Q = Math.max(.35, Math.min(6, f0t / F0REF * st.corr));
+    // pitch moves mostly through mass (heavier, longer folds sing lower) and a little through tension: f0 ~ sqrt(k/m) ~ Q
+    const qm = Math.pow(Q, 1.6), qk = Math.pow(Q, .4), m1 = P.m1 / qm, m2 = P.m2 / qm, k1 = P.k1 * qk, k2 = P.k2 * qk, kc = P.kc * qk;
+    const a1 = 2 * P.lg * (x0 + st.x1), a2 = 2 * P.lg * (x0 + st.x2);
+    // the mucosa seals progressively: the flow area tends to zero smoothly (softplus of width SOFT_A cm2), not with a corner
+    const am = Math.min(a1, a2), amin = SOFT_A > 0 ? SOFT_A * Math.log1p(Math.exp(Math.min(40, am / SOFT_A))) - SOFT_A * Math.log1p(Math.exp(-40)) : Math.max(0, am);
+    let U = 0;
+    if (amin > 0) { const k = 2 * amin * amin / RHO_AIR, bq = k * Z, cq = k * (Ps - pinc); if (cq > 0) U = (-bq + Math.sqrt(bq * bq + 4 * cq)) / 2; }
+    const psup = pinc + Z * U;
+    let P1, P2;
+    if (a1 <= 0) { P1 = Ps; P2 = psup; } else if (a2 <= 0) { P1 = Ps; P2 = Ps; } else { P1 = Ps - .5 * RHO_AIR * (U / a1) ** 2; P2 = psup; }
+    let F1 = P.lg * P.d1 * P1, F2 = P.lg * P.d2 * P2, z1 = .1, z2 = .6;
+    if (a1 < 0) { F1 -= 3 * k1 * (st.x1 + x0); z1 = 1.1; }  // collision: the tissue resists, damping rises
+    if (a2 < 0) { F2 -= 3 * k2 * (st.x2 + x0); z2 = 1.6; }
+    const acc1 = (F1 - k1 * st.x1 - kc * (st.x1 - st.x2) - 2 * z1 * Math.sqrt(m1 * k1) * st.v1) / m1;
+    const acc2 = (F2 - k2 * st.x2 - kc * (st.x2 - st.x1) - 2 * z2 * Math.sqrt(m2 * k2) * st.v2) / m2;
+    st.v1 += acc1 * dt; st.v2 += acc2 * dt; st.x1 += st.v1 * dt; st.x2 += st.v2 * dt;
+    // one cycle = the lower mass turns from closing to opening; correct the tension toward the target pitch
+    st.t += dt;
+    // a cycle starts when the lower mass swings outward through its running centre (refractory: no second start within
+    // 60 % of the target period, so the bounces of a collision are not counted as cycles)
+    st.xm += (st.x1 - st.xm) * Math.min(1, dt * f0t * .5);
+    const up = st.x1 - st.xm;
+    st.lo = Math.min(st.lo, st.x1); st.hi = Math.max(st.hi, st.x1);
+    if (st.lastV < 0 && up >= 0 && st.t - st.tPrev > .6 / f0t) {
+      // learn only from a real swing (a still or drifting fold says nothing about pitch)
+      if (st.tPrev >= 0 && st.hi - st.lo > .008) { const T = st.t - st.tPrev; if (T < 1 / 40) { st.f0m = 1 / T; st.corr = Math.max(.5, Math.min(2, st.corr * Math.pow(f0t / st.f0m, .25))); } }
+      st.tPrev = st.t; st.lo = 1e9; st.hi = -1e9;
+    }
+    st.lastV = up; st.U = U;
+    return U;
+  };
+  return st;
+}
+// flow scale: model units are pressure = flow / area; physical pressure = RHO_C x 300 x model pressure, flow = 300 x model flow
+const FLOW_S = 300, RHO_C = RHO_AIR * 35000;
+
 // ---------------------------------------------------------------- impulse response (for fitting)
 function impulse(singer, P, n) {
   const sg = typeof singer === 'string' ? SINGERS[singer] : singer, T = Tract(sg), A = new Float64Array(T.N);
@@ -295,6 +346,10 @@ function plan(syl) {
 // aspiration gain, calibrated by tools/calibrate.js so that sg.breath maps to a harmonics-to-noise ratio
 const ASP_K = .02;
 // aerodynamics (normalised: lung pressure 1, flow = area x sqrt(pressure drop)); see sing()
+// FOLDS: physical vocal folds (two-mass model) instead of the drawn LF pulse; PS0: lung pressure at Ee = 1 (dyn/cm2)
+// physical folds work (pitch exact, devoicing emerges) but sound 10-15 dB too bright and softening them destabilises the
+// coupling: opt-in until the mucosa is modelled (qa/intelligibility.md)
+let FOLDS = false, PS0 = 9500, TILT_FC = 0, SOFT_A = 0;
 let AERO = true, AERO_C = .006, AERO_KF = .05, AERO_KA = .02;
 let WALL_ABS = .03;   // extra wall absorption per sample per section during a closure
 // a release burst lasts a few milliseconds (time constant): longer, it turns into a fricative
@@ -334,7 +389,8 @@ function sing(singer, syl, opts = {}) {
   // state
   let si = 0, ph = R(), Rd = sg.Rd, Ee = 0, perJ = 0, perS = 0, burst = 0, burstAt = 0, burstHF = 0;
   let hp1 = 0, hp1x = 0, nzLP = 0, bLP = 0, bLo = 0, prevY = 0;
-  const aero = opts.aero !== undefined ? opts.aero : AERO; let Po = 0, nzA = 0, aspA = 0, nzBand = BAND.tip, nzObs = 1;
+  let Uf1 = 0, Uf2 = 0; const kTilt = T.lp(opts.tilt || sg.tilt || TILT_FC);
+  const aero = opts.aero !== undefined ? opts.aero : AERO, folds = (opts.folds !== undefined ? opts.folds : FOLDS) ? Folds(sg) : null; let Po = 0, nzA = 0, aspA = 0, nzBand = BAND.tip, nzObs = 1;
   const P = { q1: 0, q2: 0, q3: 0, lip: 3, rnd: 0, cons: [] };
   const consArr = Object.keys(ch).map(k => [0, chU[k], 0, PLACE[k] ? PLACE[k][2] : 1.3]);
   const keys = Object.keys(ch);
@@ -431,9 +487,10 @@ function sing(singer, syl, opts = {}) {
     // ---- source strength
     const dyn = note.dyn === undefined ? .6 : note.dyn;
     const decl = 1 - .25 * clamp((t - note.t0) / Math.max(.3, dur), 0, 1) * (dur > 1 ? 1 : .3);
-    const tEe = on * (opts.amp ? opts.amp(t) : (.35 + .65 * dyn) * decl) * (1 + .05 * wAmp()) * (aero ? aeroVoice : (1 - occlE) * (1 - .45 * narrowF));
+    // with physical folds the pressure across them does the work of aeroVoice/occlusion by itself
+    const tEe = on * (opts.amp ? opts.amp(t) : (.35 + .65 * dyn) * decl) * (1 + .05 * wAmp()) * (folds ? 1 : aero ? aeroVoice : (1 - occlE) * (1 - .45 * narrowF));
     const tRd = (opts.Rd || sg.Rd) + (1 - dyn) * (opts.Rd ? .2 : .5) + (1 - on) * .8 + .08 * wRd();
-    if (opts.trace) opts.trace.push([t, f0, tEe, tRd, ab, vel, cmin]);
+    if (opts.trace) opts.trace.push([t, f0, tEe, tRd, ab, vel, cmin, folds ? folds.U : 0, folds ? folds.corr : 0, Po, folds ? folds.x1 : 0]);
     // ---- render the block
     const lim = Math.min(CB, nOut - n0);
     for (let j = 0; j < lim; j++) {
@@ -442,14 +499,28 @@ function sing(singer, syl, opts = {}) {
       ph += f0 * (1 + perJ) / FS;
       if (ph >= 1) { ph -= 1; perJ = R.g() * sg.jitter; perS = R.g() * sg.shimmer; }
       Ee += (tEe - Ee) * kEnv; Rd += (tRd - Rd) * kEnv;
-      const ug = glottalFlow(Rd, ph);
-      let Ug = ug * Ee * voiced * (1 + perS) * 6;
+      let ug, Ug;
+      if (folds) {
+        // lungs -> two-mass folds -> tract: loudness is lung pressure, the gap between the folds is abduction,
+        // and the oral pressure built up behind a closure (aero Po) pushes back on the folds
+        // the oral pressure built up behind a closure lowers the drive across the glottis (fed as a lower lung pressure:
+        // a steady push on the upper masses would lock this model open, which real folds do not do)
+        const s0 = Math.sqrt(Math.max(T.A[0], .05 * T.scale * T.scale)), Z = RHO_C / (s0 * s0), Ps = PS0 * Ee * (1 + perS) * (aero ? 1 - Po : 1);
+        const pinc = 2 * RHO_C * FLOW_S * T.L[0] / s0;
+        // the closure of real folds is softened by their mucosa and the inertia of the air in the glottis: a gentle low-pass
+        // on the flow (fc = TILT_FC, two cascaded poles) brings the spectral balance to that of a real voice. The tract
+        // receives the smoothed flow, so the coupling is solved for it: smoothed = ca + cb x U, exactly.
+        const ca = TILT_FC > 0 ? Uf2 + kTilt * (Uf1 * (1 - kTilt) - Uf2) : 0, cb = TILT_FC > 0 ? kTilt * kTilt : 1;
+        const U = folds.step(Ps, pinc + Z * ca, Z * cb, (sg.x0 !== undefined ? sg.x0 : .018) + .11 * ab, f0 * (1 + perJ), 1 / FS);
+        if (TILT_FC > 0) { Uf1 += (U - Uf1) * kTilt; Uf2 += (Uf1 - Uf2) * kTilt; } else Uf2 = U;
+        Ug = Uf2 / FLOW_S; ug = Uf2 / 2000;
+      } else { ug = glottalFlow(Rd, ph); Ug = ug * Ee * voiced * (1 + perS) * 6; }
       // aspiration: noise in the glottal flow, stronger while the folds are apart
       // turbulence in the glottal jet: band-limited (200 Hz - 3.5 kHz in volume velocity, rising after radiation)
       const asp = R.g(); hp1x += (asp - hp1x) * kAsp; hp1 += (hp1x - hp1) * kAspH; const aspN = hp1x - hp1;
       // (pulsed with the opening of the folds, as in real voices; a steady hiss only when they are held apart)
-      Ug += aspN * Ee * sg.breath * (.12 + ug * 7) * voiced * ASP + (aero ? aspN * aspA : aspN * Ee * ab * on * ASP * .3);
-      const rg = .72 - .12 * ab;
+      Ug += aspN * Ee * sg.breath * (.12 + ug * 7) * (folds ? 1 : voiced) * ASP + (aero ? aspN * aspA : aspN * Ee * ab * on * ASP * .3);
+      const rg = folds ? 1 : .72 - .12 * ab;
       // turbulence at the narrowest place downstream of the glottis
       let n1 = 0, n1i = 0;
       if (aero) { if (nzA > 1e-5) { const w = R.g(); bLP += (w - bLP) * nzBand[1]; bLo += (bLP - bLo) * nzBand[0]; n1 = (bLP - bLo) * nzA; n1i = Math.min(N - 1, cidx + 1); } }
@@ -540,6 +611,6 @@ function resample(x, fin, fout) {
   return out;
 }
 
-return { set aero(v) { AERO = v; }, get aero() { return AERO; }, set aeroKF(v) { AERO_KF = v; }, set aeroKA(v) { AERO_KA = v; }, set aeroC(v) { AERO_C = v; }, drive, set model2(v) { USE2 = v && !!(MODES && POST2); }, get model2() { return USE2; }, set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
+return { set softA(v) { SOFT_A = v; }, set tilt(v) { TILT_FC = v; }, set folds(v) { FOLDS = v; }, get folds() { return FOLDS; }, set ps0(v) { PS0 = v; }, set f0ref(v) { F0REF = v; }, Folds, FLOW_S, RHO_C, set aero(v) { AERO = v; }, get aero() { return AERO; }, set aeroKF(v) { AERO_KF = v; }, set aeroKA(v) { AERO_KA = v; }, set aeroC(v) { AERO_C = v; }, drive, set model2(v) { USE2 = v && !!(MODES && POST2); }, get model2() { return USE2; }, set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
 })();
 if (typeof module !== 'undefined') module.exports = VOICE;

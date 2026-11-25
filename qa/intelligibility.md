@@ -180,6 +180,31 @@ Diagnostic uniquement : on échange les 250 ms autour de la consonne testée ent
 Verdict : notre voix, nos voyelles et notre prosodie sont acceptables pour le juge. **Tout le défaut tient dans la fenêtre de la
 consonne** (occlusion ou friction, relâchement, début de transition).
 
+## Cordes vocales physiques (modèle à deux masses, en option : `VOICE.folds = true`)
+
+Ishizaka & Flanagan (1972) : deux masses par corde, souffle de Bernoulli, collisions, couplage avec le conduit résolu exactement
+à chaque échantillon (débit et pression sus-glottique ensemble). Mesures sur une voyelle tenue :
+
+| cible | hauteur | débit max | débit moyen | phase fermée |
+|---|---|---|---|---|
+| 110 Hz | 110,0 | 656 cm³/s | 287 | 29 % |
+| 150 Hz | 150,0 | 601 | 268 | 28 % |
+| 220 Hz, plus fort | 220,0 | 646 | 297 | 29 % |
+| cordes écartées | pas de vibration, souffle continu 939 cm³/s | | | |
+
+Le dévoisement émerge de la physique, la hauteur est exacte pour les trois voix, fredonnement compris (cordes accolées au repos ;
+la surpression orale réduit la pression transglottique). Mais :
+
+| énergie relative à 100-500 Hz | 0,5-1 k | 1-2 k | 2-4 k | 4-8 k | Whisper | Vosk |
+|---|---|---|---|---|---|---|
+| voix humaine | −17,5 | −19,7 | −13,7 | −24,8 | 96 % | 100 % |
+| cordes physiques | −5,4 | −9,5 | −6,2 | −9,9 | 34 % | 0 % |
+| source dessinée (LF) | −12,0 | −20,2 | −19,8 | −22,9 | 30 % | 34-42 % |
+
+La fermeture brutale du modèle rend la voix 10 à 15 dB trop brillante, et l'adoucir (filtre de pente, contact progressif)
+déstabilise le couplage (sifflements parasites). Il faudra un modèle de muqueuse et une intégration implicite.
+**Par défaut, la source dessinée reste en place.**
+
 ## Pistes suivantes
 
 0. **Aérodynamique** (en cours) : débit d'air et pression dans le conduit, pour que friction, explosion et voisement pendant
