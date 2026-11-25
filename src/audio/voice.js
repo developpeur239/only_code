@@ -216,6 +216,17 @@ const CONS = {
 // per-consonant source gains: g (turbulence), gb (release burst), calibrated by tools/calibrate.js
 const CG = (typeof CONSGAIN !== 'undefined') ? CONSGAIN : (typeof require === 'function' ? (() => { try { return require('./consgain.js'); } catch (e) { return null; } })() : null);
 for (const c in CONS) Object.assign(CONS[c], { g: .01, gb: .1 }, CG && CG[c] || {});
+// the tongue body's own posture during each consonant (Öhman's model: a consonant gesture rides on the vowel-to-vowel
+// movement of the tongue body, pulling it toward its own shape). After the release the body travels to the vowel, and
+// that travel is the formant transition that tells /b/, /d/ and /g/ apart. body: a vowel whose shape it borrows, bw: how much.
+const BODY_OF = { p: ['@', .35], b: ['@', .35], m: ['@', .35], f: ['@', .3], v: ['@', .3],
+  t: ['e', .55], d: ['e', .55], n: ['e', .5], s: ['e', .5], z: ['e', .5], l: ['E', .45],
+  S: ['i', .45], Z: ['i', .45], k: ['u', .7], g: ['u', .7], J: ['i', .7], R: ['O', .6] };
+for (const c in BODY_OF) Object.assign(CONS[c], { body: BODY_OF[c][0], bw: BODY_OF[c][1] });
+// per-consonant gestures fitted to a real voice by tools/copyfit.js (copy-synthesis): d, tc/to (closing/opening time constants),
+// u (place), w (width), Ac, vot, vb (voicing kept during closure), bt (burst decay)
+const CF = (typeof CONSFIT !== 'undefined') ? CONSFIT : (typeof require === 'function' ? (() => { try { return require('./consfit.js'); } catch (e) { return null; } })() : null);
+if (CF) for (const c in CF) if (CONS[c]) Object.assign(CONS[c], CF[c]);
 // consonant gestures aim past the contact (a virtual target): the closure is made firmly and early, as real tongues do
 const VT = 1.3;
 const PLACE = { lab: [.995, 0, .7], tip: [.905, 0, .9], pal: [.80, 0, 1.2], dpal: [.80, 0, 1.4], uvu: [.60, 0, 1.4] };
@@ -257,11 +268,13 @@ function plan(syl) {
 
 // aspiration gain, calibrated by tools/calibrate.js so that sg.breath maps to a harmonics-to-noise ratio
 const ASP_K = .02;
-let WALL_ABS = .03;    // extra wall absorption per sample per section during a closure
+let WALL_ABS = .03;   // extra wall absorption per sample per section during a closure
+// a release burst lasts a few milliseconds (time constant): longer, it turns into a fricative
+const BURST_T = .0025;
 // critically damped follower, at control rate
 function follower(x0, tau, DT) { let x = x0, v = 0; const w = 1 / tau; return tgt => { const a = w * w * (tgt - x) - 2 * w * v; v += a * DT; x += v * DT; return x; }; }
 // constrictions close fast and open slowly (the contact peels away), and opening area grows smoothly from zero
-function follower2(x0, tauC, tauO, DT) { let x = x0, v = 0; return tgt => { const w = 1 / (tgt < x ? tauO : tauC), a = w * w * (tgt - x) - 2 * w * v; v += a * DT; x += v * DT; return x; }; }
+function follower2(x0, tauC, tauO, DT) { let x = x0, v = 0; return (tgt, tc, to) => { const w = 1 / (tgt < x ? (to || tauO) : (tc || tauC)), a = w * w * (tgt - x) - 2 * w * v; v += a * DT; x += v * DT; return x; }; }
 function underdamped(x0, tau, zeta, DT) { let x = x0, v = 0; const w = 1 / tau; return tgt => { for (let s = 0; s < 4; s++) { const a = w * w * (tgt - x) - 2 * zeta * w * v; v += a * DT / 4; x += v * DT / 4; } return x; }; }
 
 // ---------------------------------------------------------------- sing
@@ -271,7 +284,7 @@ function sing(singer, syl, opts = {}) {
   const R = rng((opts.seed || 0) * 7919 + sg.seed), T = Tract(sg), N = T.N;
   const FS = T.fs, CB = T.cb, DT = T.dt, F = (x, tau) => follower(x, tau, DT);
   const kEnv = T.lp(28), kNzH = T.lp(26600), kNzL = T.lp(11200), kBH = T.lp(32000), kBL = T.lp(9700), BAND = { lab: [0, T.lp(1800)], tip: [T.lp(2600), T.lp(30000)], pal: [T.lp(1800), T.lp(9000)], dpal: [T.lp(1800), T.lp(7000)], dor: [T.lp(1100), T.lp(4200)], uvu: [T.lp(600), T.lp(2500)] };
-  let bBand = BAND.tip; const _u = 0, kBurst = Math.exp(-1 / (.0094 * FS)), kAsp = T.lp(3500), kAspH = T.lp(200), ASP = opts.asp === undefined ? ASP_K : opts.asp;
+  let bBand = BAND.tip, kBurst = Math.exp(-1 / (BURST_T * FS)); const _u = 0, kAsp = T.lp(3500), kAspH = T.lp(200), ASP = opts.asp === undefined ? ASP_K : opts.asp;
   const segs = plan(syl);
   const tStart = Math.max(0, segs[0].a - .25), tEnd = syl[syl.length - 1].t1 + (opts.tail || .35);
   const nOut = Math.ceil((tEnd - tStart) * FS), out = new Float64Array(nOut);
@@ -284,7 +297,8 @@ function sing(singer, syl, opts = {}) {
   // stops open about as fast as they close (~10 ms): a slow release turns a /b/ or /d/ into a glide, heard as /l/
   const ch = { lab: F2(.009, .008), tip: F2(.008, .007), pal: F2(.010, .009), dpal: F2(.011, .010), dor: F2(.011, .009), uvu: F2(.014, .012) };
   const chAc = { lab: 0, tip: 0, pal: 0, dpal: 0, dor: 0, uvu: 0 };
-  const chU = { lab: .995, tip: .905, pal: .80, dpal: .80, dor: .7, uvu: .6 };
+  const U0 = { lab: .995, tip: .905, pal: .80, dpal: .80, dor: .7, uvu: .6 }, chU = Object.assign({}, U0);
+  const lastC = { lab: null, tip: null, pal: null, dpal: null, dor: null, uvu: null };   // the consonant that last used each articulator
   const armed = { lab: null, tip: null, pal: null, dpal: null, dor: null, uvu: null }, closedFor = { lab: 0, tip: 0, pal: 0, dpal: 0, dor: 0, uvu: 0 };
   const ff0 = underdamped(syl[0].midi, .035, .55, DT);
   const wJ = wander(R, 6, DT), wDrift = wander(R, .25, DT), wTrem = wander(R, sg.tremor[0], DT), wVib = wander(R, .5, DT), wAmp = wander(R, 3, DT), wRd = wander(R, 1, DT);
@@ -305,12 +319,13 @@ function sing(singer, syl, opts = {}) {
     // ---- targets
     const sub = substrate(s.sub);
     let tq1 = sub.q1, tq2 = sub.q2, tq3 = sub.q3, tlip = sub.lip, trnd = sub.rnd, tvel = 0, tab = 0;
+    if (inSeg && C_ && C_.body && C_.bw) { const bd = substrate(C_.body), w = C_.bw; tq1 += (bd.q1 - tq1) * w; tq2 += (bd.q2 - tq2) * w; tq3 += (bd.q3 - tq3) * w; }
     const tgtC = { lab: 0, tip: 0, pal: 0, dpal: 0, dor: 0, uvu: 0 };
     let fric = 0, fricPl = null, fricHF = 0;
     if (s.ph === 'M') { tgtC.lab = VT; chAc.lab = 0; tvel = 1.4; }
     else if (s.v) { tvel = NASALV[s.ph] || 0; }
     if (inSeg && C_ && s.ph !== 'M') {
-      let pl = C_.pl; if (pl === 'dor') { chU.dor = dorsumPlace(s.sub); }
+      let pl = C_.pl; lastC[pl] = C_; chU[pl] = C_.u !== undefined ? C_.u : pl === 'dor' ? dorsumPlace(s.sub) : U0[pl];
       if (C_.k === 's') { tgtC[pl] = VT; chAc[pl] = 0; tab = C_.vl; armed[pl] = C_; }
       else if (C_.k === 'n') { tgtC[pl] = VT; chAc[pl] = 0; tvel = 1.4; }
       else if (C_.k === 'f') { tgtC[pl] = VT; chAc[pl] = C_.Ac; tab = C_.vl; fric = C_.g; fricPl = pl; fricHF = C_.hf || 0; if (C_.rnd) trnd = Math.max(trnd, C_.rnd); }
@@ -318,18 +333,18 @@ function sing(singer, syl, opts = {}) {
       else if (C_.k === 'g') { tgtC[pl] = VT; chAc[pl] = C_.Ac; }
     }
     // voiceless stops keep the glottis open a little past the release (French: short lag)
-    if (!inSeg || !C_ || C_.k !== 's') { const pv = segs[si - 1]; if (pv && CONS[pv.ph] && CONS[pv.ph].k === 's' && CONS[pv.ph].vl && t - pv.b < .022) tab = 1; }
+    if (!inSeg || !C_ || C_.k !== 's') { const pv = segs[si - 1]; if (pv && CONS[pv.ph] && CONS[pv.ph].k === 's' && CONS[pv.ph].vl && t - pv.b < (CONS[pv.ph].vot || .022)) tab = 1; }
     // the folds part before a voiceless consonant closes, so it is voiceless from its first moment
     { const nx = inSeg ? null : s, nx2 = segs[si + 1]; for (const q of [nx, nx2]) if (q && CONS[q.ph] && CONS[q.ph].vl && t >= q.a - .03 && t < q.b) tab = 1; }
     // ---- follow
     P.q1 = fq1(tq1); P.q2 = fq2(tq2); P.q3 = fq3(tq3); P.lip = flip(tlip); P.rnd = frnd(trnd);
     const vel = fvel(tvel), ab = clamp(fab(phr ? tab : 1), 0, 1), on = fon(phr ? 1 : 0);
-    for (let c = 0; c < keys.length; c++) { const k = keys[c], m = clamp(ch[k](tgtC[k]), 0, 1); consArr[c][0] = tgtC[k] > 0 ? 1 - (1 - m) * (1 - m) : m; /* closing eases onto the contact, opening is quick */ consArr[c][1] = chU[k]; consArr[c][2] = chAc[k]; }
+    for (let c = 0; c < keys.length; c++) { const k = keys[c], lc = lastC[k], m = clamp(ch[k](tgtC[k], lc && lc.tc, lc && lc.to), 0, 1); consArr[c][3] = lc && lc.w || (PLACE[k] ? PLACE[k][2] : 1.3); consArr[c][0] = tgtC[k] > 0 ? 1 - (1 - m) * (1 - m) : m; /* closing eases onto the contact, opening is quick */ consArr[c][1] = chU[k]; consArr[c][2] = chAc[k]; }
     P.cons = consArr;
     areas(N, T.scale, P, A); settle(T, A, vel);
     // a full oral closure with the velum shut: the air has nowhere to go, the pressure behind it rises,
     // the walls give, and the folds lose their drive (voicing fades during a voiced stop, as it does in life)
-    let occl = 0; for (let c = 0; c < keys.length; c++) if (chAc[keys[c]] === 0) occl = Math.max(occl, s3((consArr[c][0] - .9) / .1));
+    let occl = 0, occlE = 0; for (let c = 0; c < keys.length; c++) if (chAc[keys[c]] === 0) { const o = s3((consArr[c][0] - .9) / .1), lc = lastC[keys[c]]; occl = Math.max(occl, o); occlE = Math.max(occlE, o * (lc && lc.vb !== undefined ? lc.vb : .6)); }
     occl *= 1 - s3(vel / .3);
     // near a closure the soft walls, not the glottis, set F1's damping: losses grow as the passage narrows
     let cm = 1e9; for (let i = Math.floor(N * .45); i < N; i++) cm = Math.min(cm, A[i]);
@@ -347,7 +362,7 @@ function sing(singer, syl, opts = {}) {
     for (let c = 0; c < keys.length; c++) {
       const k = keys[c], i0 = clamp(Math.round(chU[k] * N - .5), 0, N - 1), a = A[i0];
       if (a < .002 * T.scale * T.scale) closedFor[k] += DT;
-      else { if (closedFor[k] > .015 && armed[k]) { burst = clamp(closedFor[k] / .05, .4, 1) * armed[k].gb; burstAt = Math.min(N - 1, i0 + 1); bBand = BAND[k]; } closedFor[k] = 0; armed[k] = null; }
+      else { if (closedFor[k] > .015 && armed[k]) { burst = clamp(closedFor[k] / .05, .4, 1) * armed[k].gb; burstAt = Math.min(N - 1, i0 + 1); bBand = BAND[k]; kBurst = Math.exp(-1 / ((armed[k].bt || BURST_T) * FS)); } closedFor[k] = 0; armed[k] = null; }
     }
     // ---- pitch: the note under us, a little ahead of the vowel
     let ni = 0; for (let k = 0; k < syl.length; k++) if (t >= syl[k].t0 - .06) ni = k;
@@ -364,8 +379,8 @@ function sing(singer, syl, opts = {}) {
     // ---- source strength
     const dyn = note.dyn === undefined ? .6 : note.dyn;
     const decl = 1 - .25 * clamp((t - note.t0) / Math.max(.3, dur), 0, 1) * (dur > 1 ? 1 : .3);
-    const tEe = on * (opts.amp ? opts.amp(t) : (.35 + .65 * dyn) * decl) * (1 + .05 * wAmp()) * (1 - .6 * occl) * (1 - .45 * narrowF);
-    const tRd = sg.Rd + (1 - dyn) * .5 + (1 - on) * .8 + .08 * wRd();
+    const tEe = on * (opts.amp ? opts.amp(t) : (.35 + .65 * dyn) * decl) * (1 + .05 * wAmp()) * (1 - occlE) * (1 - .45 * narrowF);
+    const tRd = (opts.Rd || sg.Rd) + (1 - dyn) * (opts.Rd ? .2 : .5) + (1 - on) * .8 + .08 * wRd();
     if (opts.trace) opts.trace.push([t, f0, tEe, tRd, ab, vel, cmin]);
     // ---- render the block
     const lim = Math.min(CB, nOut - n0);

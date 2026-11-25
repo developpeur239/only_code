@@ -84,4 +84,37 @@ function writeWav(file, chans, sr = 44100) {
 }
 function normalize(x, peakDb = -1) { let p = 1e-9; for (const v of x) p = Math.max(p, Math.abs(v)); const g = Math.pow(10, peakDb / 20) / p; const y = new Float32Array(x.length); for (let i = 0; i < x.length; i++) y[i] = x[i] * g; return y; }
 
-module.exports = { fft, spectrumDb, peaks, formantsIR, lpcFormants, yin, midiOf, rmsDb, writeWav, normalize };
+// MFCC: 25 ms frames every 10 ms, 26 mel bands 100-7600 Hz, 13 cepstra without c0, mean-normalised per utterance
+const MEL = (() => { const cache = {}; return (sr, n) => {
+  const k = sr + ':' + n; if (cache[k]) return cache[k];
+  const mel = f => 2595 * Math.log10(1 + f / 700), inv = m => 700 * (Math.pow(10, m / 2595) - 1), B = 26, lo = mel(100), hi = mel(7600);
+  const pts = Array.from({ length: B + 2 }, (_, i) => inv(lo + (hi - lo) * i / (B + 1)) * n / sr);
+  const fb = []; for (let b = 0; b < B; b++) { const w = new Float64Array(n / 2); for (let i = 0; i < n / 2; i++) { const a = (i - pts[b]) / (pts[b + 1] - pts[b]), c = (pts[b + 2] - i) / (pts[b + 2] - pts[b + 1]); w[i] = Math.max(0, Math.min(a, c)); } fb.push(w); }
+  return cache[k] = fb; }; })();
+function mfcc(x, sr, from = 0, to = x.length) {
+  const win = Math.round(.025 * sr), hop = Math.round(.01 * sr), n = 2048, fb = MEL(sr, n), out = [];
+  const re = new Float64Array(n), im = new Float64Array(n);
+  for (let s = from; s + win <= to; s += hop) {
+    re.fill(0); im.fill(0);
+    for (let i = 0; i < win; i++) re[i] = (x[s + i] - .97 * (s + i > 0 ? x[s + i - 1] : 0)) * (.54 - .46 * Math.cos(2 * Math.PI * i / (win - 1)));
+    fft(re, im);
+    const e = fb.map(w => { let t = 1e-10; for (let i = 0; i < n / 2; i++) if (w[i]) t += w[i] * (re[i] * re[i] + im[i] * im[i]); return Math.log(t); });
+    const c = []; for (let k = 1; k <= 13; k++) { let t = 0; for (let b = 0; b < e.length; b++) t += e[b] * Math.cos(Math.PI * k * (b + .5) / e.length); c.push(t); }
+    out.push(c);
+  }
+  const m = new Array(13).fill(0); for (const c of out) c.forEach((v, k) => m[k] += v / out.length);
+  return out.map(c => c.map((v, k) => v - m[k]));
+}
+// DTW between two frame sequences (Euclidean), slope-limited band; cost per aligned step
+function dtw(A, B, band = .25) {
+  const n = A.length, m = B.length, W = Math.max(Math.abs(n - m) + 2, Math.round(band * Math.max(n, m))), INF = 1e18;
+  let prev = new Float64Array(m + 1).fill(INF), cur = new Float64Array(m + 1).fill(INF); prev[0] = 0;
+  const d = (a, b) => { let t = 0; for (let k = 0; k < a.length; k++) { const q = a[k] - b[k]; t += q * q; } return Math.sqrt(t); };
+  for (let i = 1; i <= n; i++) {
+    cur.fill(INF); const c0 = Math.round(i * m / n), lo = Math.max(1, c0 - W), hi = Math.min(m, c0 + W);
+    for (let j = lo; j <= hi; j++) cur[j] = d(A[i - 1], B[j - 1]) + Math.min(prev[j - 1], prev[j], cur[j - 1]);
+    [prev, cur] = [cur, prev];
+  }
+  return prev[m] / (n + m);
+}
+module.exports = { mfcc, dtw, fft, spectrumDb, peaks, formantsIR, lpcFormants, yin, midiOf, rmsDb, writeWav, normalize };

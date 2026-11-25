@@ -17,7 +17,8 @@ for (const [set, words] of Object.entries(SETS)) for (const [w, ph] of Object.en
   // a carrier phrase, as in audiology: « je dis ___ », only the last word changes; falling statement intonation
   const syl = [{ ph: ['Z', '@'], midi: base + 3, t0: .45, t1: .58, dyn: .7 }, { ph: ['d', 'i'], midi: base + 4, t0: .66, t1: .8, dyn: .75 },
                { ph: ph.split(' '), midi: base + 1, t0: .92, t1: 1.25, dyn: .7 }];
-  const r = V.sing(who, syl, { seed: 3 + sd * 11, tail: .3 });
+  if (process.env.CLEAN) Object.assign(V.SINGERS[who], { jitter: 0, shimmer: 0, tremor: [3, 0], drift: 0, vib: [5, 0, .3] });
+  const r = V.sing(who, syl, { seed: 3 + sd * 11, tail: .3, Rd: process.env.RD ? +process.env.RD : undefined, asp: process.env.ASP ? +process.env.ASP : undefined });
   const mix = new Float64Array(Math.ceil(2.0 * 44100)), o = Math.round(r.t0 * 44100);
   for (let i = 0; i < r.pcm.length && o + i < mix.length; i++) mix[o + i] += r.pcm[i];
   const f = path.join(out, `${set}_${w}_${who}_${sd}.wav`);

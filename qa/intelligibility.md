@@ -76,8 +76,28 @@ voisées restent entendues /l/, les occlusives sourdes /s/. Au spectrogramme, la
 - Relâchements des occlusives aussi rapides que les fermetures (~10 ms), dévoisement anticipé avant une consonne sourde,
   explosions filtrées selon le lieu, /ʃ/ reculé et arrondi, murmure nasal plus sourd, consonnes allongées comme en diction chantée.
 
-## Prochaine étape : la synthèse par copie des articulations
+## La synthèse par copie (tools/copyfit.js)
 
-Ajuster automatiquement les gestes de chaque consonne (instants, vitesses, lieux, voisement, explosion) pour que la phrase
-synthétique se rapproche de la phrase humaine, mesuré par une distance spectrale (MFCC alignés par DTW), puis vérifier au juge.
-C'est la même méthode que pour les voyelles, étendue au mouvement.
+Un optimiseur ajuste les gestes de chaque consonne (durée, vitesses de fermeture et d'ouverture, lieu, largeur, constriction,
+voisement, explosion) pour rapprocher le modèle de la voix de référence (MFCC alignés par DTW).
+
+| essai | ce qu'on a appris | consonnes Whisper | consonnes Vosk |
+|---|---|---|---|
+| distance brute sur le mot | dominée par le timbre de la voyelle, pas par la consonne | 28-31 % | 19-29 % |
+| marge discriminante (plus proche du bon mot que des autres) | 8 consonnes sur 12 deviennent « plus proches du bon mot », mais les juges n'en profitent guère : avec deux prises par mot, l'optimiseur colle aux exemplaires | 28 % | 33-46 % |
+| posture du corps de la langue pendant chaque consonne (Öhman) | transitions de formants plus réalistes, sans gain mesurable | 17 % | 31 % |
+| source plus tendue (Rd 0,8 et 0,55) | pas de gain | 17-22 % | 25-31 % |
+| source parfaitement propre (sans souffle ni vibrato) | pas de gain : le bruit n'est pas en cause | 17 % | 22 % |
+| explosions brèves (2,5 ms) | pas de gain | 19 % | 31 % |
+
+Lecture : quand les indices de la consonne sont faibles, le juge retombe sur les mots les plus fréquents de la liste
+(« ça », « la »), d'où ces attracteurs. **Les indices consonantiques restent trop faibles, et aucune retouche locale ne les a
+renforcés de façon mesurable.** Les gestes ajustés (`src/audio/consfit.js`) ne sont pas activés par défaut.
+
+## Pistes suivantes
+
+1. **Inversion acoustique-articulatoire image par image** : au lieu d'ajuster une dizaine de paramètres par consonne, retrouver la
+   trajectoire complète des articulateurs (toutes les 10 ms) qui reproduit les MFCC de la voix réelle, puis en déduire des gestes
+   généraux. Plus lourd, mais c'est la méthode qui attaque directement le problème.
+2. **Plus de prises de référence** (plusieurs mots par consonne, plusieurs voyelles), pour que l'optimisation apprenne l'indice et
+   non l'exemplaire.
