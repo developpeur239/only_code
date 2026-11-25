@@ -332,7 +332,7 @@ function dorsumPlace(v) { const s = substrate(v); return s.q1 > .3 ? .76 : s.q1 
 // returns timelines of step targets for every articulator channel
 // diction: singers lengthen consonants to be understood; 1 = conversational
 let DICTION = 1;
-let BODY_TAU = .02, ONSET_T = .04;
+let BODY_TAU = .02, ONSET_T = .04, REDUCE = .5;
 function plan(syl) {
   const segs = []; const dur = c => CONS[c].d * (CONS[c].k === 'g' ? 1 : DICTION);
   for (let k = 0; k < syl.length; k++) {
@@ -389,7 +389,7 @@ function sing(singer, syl, opts = {}) {
   // the tongue body reaches its vowel within a short syllable (measured on a real voice: F2 settles in ~60 ms)
   const fb = sub0.b ? sub0.b.map(v => F(v, BODY_TAU)) : null;
   const fq1 = F(sub0.q1, .045), fq2 = F(sub0.q2, .045), fq3 = F(sub0.q3, .045), flip = F(sub0.lip, .025), frnd = F(sub0.rnd, .05);
-  const fvel = F(0, .028), fab = F(1, .008), fon = F(0, .03);
+  const fvel = F(0, .028), fab = F(1, .012), fon = F(0, .03);
   const F2 = (tc, to) => follower2(0, tc, to, DT);
   // stops open about as fast as they close (~10 ms): a slow release turns a /b/ or /d/ into a glide, heard as /l/
   const ch = { lab: F2(.009, .008), tip: F2(.008, .007), pal: F2(.010, .009), dpal: F2(.011, .010), dor: F2(.011, .009), uvu: F2(.014, .012) };
@@ -417,6 +417,10 @@ function sing(singer, syl, opts = {}) {
     const phr = t >= segs[0].a - .04 && t < syl[syl.length - 1].t1;
     // ---- targets
     const sub = substrate(s.sub);
+    // vowel reduction: a short, unstressed syllable is not articulated to the full (a real speaker's « dis » is softened,
+    // ~16 dB darker above 2 kHz than a held /i/): its posture moves part way toward the neutral vowel
+    { const sk = syl[s.syl]; const dur = sk ? sk.t1 - sk.t0 : 1; const red = REDUCE * (1 - s3((dur - .12) / .25)) * (s.v ? 1 : 0);
+      if (red > 0 && sub.b && s.ph !== '@') { const nb = substrate('@'); sub.b = sub.b.map((v, j) => v + (nb.b[j] - v) * red); sub.lip += (nb.lip - sub.lip) * red; } }
     let tq1 = sub.q1, tq2 = sub.q2, tq3 = sub.q3, tlip = sub.lip, trnd = sub.rnd, tvel = 0, tab = 0;
     let tb = sub.b ? sub.b.slice() : null;
     if (inSeg && C_ && C_.body && C_.bw) { const bd = substrate(C_.body), w = C_.bw; tq1 += (bd.q1 - tq1) * w; tq2 += (bd.q2 - tq2) * w; tq3 += (bd.q3 - tq3) * w; if (tb && bd.b) tb = tb.map((v, j) => v + (bd.b[j] - v) * w); }
@@ -428,14 +432,20 @@ function sing(singer, syl, opts = {}) {
       let pl = C_.pl; lastC[pl] = C_; chU[pl] = C_.u !== undefined ? C_.u : pl === 'dor' ? dorsumPlace(s.sub) : U0[pl];
       if (C_.k === 's') { tgtC[pl] = VT; chAc[pl] = 0; tab = C_.vl; armed[pl] = C_; }
       else if (C_.k === 'n') { tgtC[pl] = VT; chAc[pl] = 0; tvel = 1.4; }
-      else if (C_.k === 'f') { tgtC[pl] = VT; chAc[pl] = C_.Ac; tab = C_.vl; fric = C_.g; fricPl = pl; fricHF = C_.hf || 0; if (C_.rnd) trnd = Math.max(trnd, C_.rnd); }
+      else if (C_.k === 'f') { tgtC[pl] = VT; chAc[pl] = C_.Ac; tab = C_.vl ? s3((t - s.a + .015) / (.45 * (s.b - s.a))) * (1 - s3((t - s.b + .3 * (s.b - s.a)) / (.3 * (s.b - s.a)))) : 0; fric = C_.g; fricPl = pl; fricHF = C_.hf || 0; if (C_.rnd) trnd = Math.max(trnd, C_.rnd); }
       else if (C_.k === 'l') { tgtC[pl] = VT; chAc[pl] = C_.Ac; if (C_.nz) { fric = C_.g; fricPl = pl; } }
       else if (C_.k === 'g') { tgtC[pl] = VT; chAc[pl] = C_.Ac; }
     }
     // voiceless stops keep the glottis open a little past the release (French: short lag)
     if (!inSeg || !C_ || C_.k !== 's') { const pv = segs[si - 1]; if (pv && CONS[pv.ph] && CONS[pv.ph].k === 's' && CONS[pv.ph].vl && t - pv.b < (CONS[pv.ph].vot || .022)) tab = 1; }
     // the folds part before a voiceless consonant closes, so it is voiceless from its first moment
-    { const nx = inSeg ? null : s, nx2 = segs[si + 1]; for (const q of [nx, nx2]) if (q && CONS[q.ph] && CONS[q.ph].vl && t >= q.a - .03 && t < q.b) tab = 1; }
+    // the folds part in step with the mouth: before a stop a little ahead (the closure hides it), but for a fricative they
+    // open while the channel forms and peak in its middle - opened earlier, a burst of free air through the still open
+    // mouth sounds like an /h/ click before the hiss, and the fricative is heard as a stop
+    { const nx = inSeg ? null : s, nx2 = segs[si + 1];
+      for (const q of [nx, nx2]) if (q && CONS[q.ph] && CONS[q.ph].vl && t < q.b) {
+        const fr = CONS[q.ph].k === 'f', lead = fr ? -.015 : .03, len = q.b - q.a;
+        if (t >= q.a - lead) tab = fr ? Math.max(tab, s3((t - q.a + .015) / (.45 * len)) * (1 - s3((t - q.b + .3 * len) / (.3 * len)))) : 1; } }
     // ---- follow
     P.q1 = fq1(tq1); P.q2 = fq2(tq2); P.q3 = fq3(tq3); if (fb && tb) P.b = fb.map((f, j) => f(tb[j])); P.lip = flip(tlip); P.rnd = frnd(trnd);
     const vel = fvel(tvel), ab = clamp(fab(phr ? tab : 1), 0, 1), on = fon(phr ? 1 : 0);
@@ -626,6 +636,6 @@ function resample(x, fin, fout) {
   return out;
 }
 
-return { set bodyTau(v) { BODY_TAU = v; }, set onsetT(v) { ONSET_T = v; }, set zip(v) { ZIP_MS = v; }, set softA(v) { SOFT_A = v; }, set tilt(v) { TILT_FC = v; }, set folds(v) { FOLDS = v; }, get folds() { return FOLDS; }, set ps0(v) { PS0 = v; }, set f0ref(v) { F0REF = v; }, Folds, FLOW_S, RHO_C, set aero(v) { AERO = v; }, get aero() { return AERO; }, set aeroKF(v) { AERO_KF = v; }, set aeroKA(v) { AERO_KA = v; }, set aeroC(v) { AERO_C = v; }, drive, set model2(v) { USE2 = v && !!(MODES && POST2); }, get model2() { return USE2; }, set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
+return { set reduce(v) { REDUCE = v; }, set bodyTau(v) { BODY_TAU = v; }, set onsetT(v) { ONSET_T = v; }, set zip(v) { ZIP_MS = v; }, set softA(v) { SOFT_A = v; }, set tilt(v) { TILT_FC = v; }, set folds(v) { FOLDS = v; }, get folds() { return FOLDS; }, set ps0(v) { PS0 = v; }, set f0ref(v) { F0REF = v; }, Folds, FLOW_S, RHO_C, set aero(v) { AERO = v; }, get aero() { return AERO; }, set aeroKF(v) { AERO_KF = v; }, set aeroKA(v) { AERO_KA = v; }, set aeroC(v) { AERO_C = v; }, drive, set model2(v) { USE2 = v && !!(MODES && POST2); }, get model2() { return USE2; }, set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
 })();
 if (typeof module !== 'undefined') module.exports = VOICE;
