@@ -94,10 +94,24 @@ Lecture : quand les indices de la consonne sont faibles, le juge retombe sur les
 (« ça », « la »), d'où ces attracteurs. **Les indices consonantiques restent trop faibles, et aucune retouche locale ne les a
 renforcés de façon mesurable.** Les gestes ajustés (`src/audio/consfit.js`) ne sont pas activés par défaut.
 
+## L'inversion articulatoire (tools/codebook.js, tools/invert.js)
+
+Un dictionnaire de 60 000 formes du conduit (spectre de chacune), puis, pour chaque tranche de 10 ms d'un enregistrement, les formes
+les plus proches et le chemin le plus continu entre elles (Viterbi). Le modèle rejoue ensuite ce chemin (`VOICE.drive`).
+
+| entrée | erreur spectrale moyenne (13 cepstres, au carré) | juge Whisper, consonnes |
+|---|---|---|
+| notre propre voix (contrôle) | 45 | copie : 8 % (original : 17 %) |
+| voix humaine | 189 | copie : 17 % (original : 96 %) |
+
+Sur notre propre voix, l'inversion retrouve la structure de la phrase : la méthode fonctionne. Sur la voix humaine, l'erreur est
+**quatre fois plus grande** : l'espace des spectres que le modèle sait produire ne recouvre pas celui d'une vraie voix.
+C'est une limite du modèle (trois modes de langue et une seule constriction, longueur de conduit fixe, spectre de source),
+pas des règles de gestes. C'est le résultat le plus important de cette série.
+
 ## Pistes suivantes
 
-1. **Inversion acoustique-articulatoire image par image** : au lieu d'ajuster une dizaine de paramètres par consonne, retrouver la
-   trajectoire complète des articulateurs (toutes les 10 ms) qui reproduit les MFCC de la voix réelle, puis en déduire des gestes
-   généraux. Plus lourd, mais c'est la méthode qui attaque directement le problème.
-2. **Plus de prises de référence** (plusieurs mots par consonne, plusieurs voyelles), pour que l'optimisation apprenne l'indice et
-   non l'exemplaire.
+1. **Élargir l'espace du modèle** et le mesurer avec le même outil : longueur de conduit ajustée au locuteur, plus de modes de
+   langue, mâchoire et hauteur du larynx, deux constrictions, spectre de source ajusté. Critère : faire baisser l'erreur sur la
+   voix humaine (189) vers celle obtenue sur notre propre voix (45).
+2. Puis reprendre l'inversion et en déduire des gestes généraux, avec les nouvelles prises (48 phrases).

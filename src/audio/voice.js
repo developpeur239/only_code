@@ -423,6 +423,52 @@ function sing(singer, syl, opts = {}) {
   return { pcm: f, t0: tStart, sr: SR };
 }
 
+// ---------------------------------------------------------------- drive
+// The same tract and sources, driven directly by articulator tracks instead of a phone plan: copy-synthesis and inversion.
+// track: { dt, t0, frames: [{ q1, q2, q3, lip, rnd, cu, cA, vel, ab }] }   opts: { f0(t) Hz, amp(t) 0..1, seed, fric, burst }
+function drive(singer, track, opts = {}) {
+  const sg = typeof singer === 'string' ? SINGERS[singer] : singer;
+  const R = rng((opts.seed || 0) * 7919 + sg.seed), T = Tract(sg), N = T.N, FS = T.fs, CB = T.cb, DT = T.dt;
+  const fr = track.frames, dur = fr.length * track.dt, nOut = Math.ceil(dur * FS), out = new Float64Array(nOut), A = new Float64Array(N);
+  const kEnv = T.lp(28), kAsp = T.lp(3500), kAspH = T.lp(200), kNz = T.lp(11000), kB = Math.exp(-1 / (BURST_T * FS));
+  const lerpF = (k, f) => { const a = fr[Math.max(0, Math.min(fr.length - 1, Math.floor(f)))], b = fr[Math.max(0, Math.min(fr.length - 1, Math.floor(f) + 1))], u = f - Math.floor(f); return a[k] + (b[k] - a[k]) * u; };
+  let ph = R(), Rd = sg.Rd, Ee = 0, perJ = 0, perS = 0, hp1 = 0, hp1x = 0, nzLP = 0, burst = 0, prevY = 0, closedFor = 0, ab = 1;
+  const P = { q1: 0, q2: 0, q3: 0, lip: 3, rnd: 0, cons: [[0, .9, 1, 1]] };
+  for (let n0 = 0; n0 < nOut; n0 += CB) {
+    const t = n0 / FS, f = t / track.dt;
+    P.q1 = lerpF('q1', f); P.q2 = lerpF('q2', f); P.q3 = lerpF('q3', f); P.lip = Math.max(0, lerpF('lip', f)); P.rnd = lerpF('rnd', f);
+    const cA = lerpF('cA', f); P.cons[0][0] = cA < 8 ? 1 : 0; P.cons[0][1] = lerpF('cu', f); P.cons[0][2] = Math.max(0, Math.min(cA, 8));
+    areas(N, T.scale, P, A); settle(T, A, Math.max(0, lerpF('vel', f)));
+    let cm = 1e9, ci = 0; for (let i = Math.floor(N * .45); i < N; i++) if (A[i] < cm) { cm = A[i]; ci = i; }
+    const a2 = cm / (T.scale * T.scale), vel = lerpF('vel', f);
+    if (a2 < .002) closedFor += DT; else { if (closedFor > .015 && vel < .2) burst = (opts.burst || .02); closedFor = 0; }
+    const occl = (a2 < .002 ? 1 : 0) * (1 - Math.min(1, vel / .3));
+    if (occl) for (let i = 0; i < N; i++) T.loss[i] *= 1 - WALL_ABS;
+    const tab = lerpF('ab', f);
+    const f0 = opts.f0 ? opts.f0(t) : 120, tEe = (opts.amp ? opts.amp(t) : .7) * (1 - .6 * occl), tRd = sg.Rd + .2;
+    const lim = Math.min(CB, nOut - n0);
+    for (let j = 0; j < lim; j++) {
+      ab += (tab - ab) * .004;
+      const voiced = (1 - ab) * (1 - ab);
+      ph += f0 * (1 + perJ) / FS; if (ph >= 1) { ph -= 1; perJ = R.g() * sg.jitter; perS = R.g() * sg.shimmer; }
+      Ee += (tEe - Ee) * kEnv; Rd += (tRd - Rd) * kEnv;
+      const ug = glottalFlow(Rd, ph);
+      let Ug = ug * Ee * voiced * (1 + perS) * 6;
+      const asp = R.g(); hp1x += (asp - hp1x) * kAsp; hp1 += (hp1x - hp1) * kAspH;
+      Ug += (hp1x - hp1) * Ee * (sg.breath * (.12 + ug * 7) * voiced * ASP_K + ab * ASP_K * .3);
+      // turbulence wherever the passage is narrow and air flows
+      let n1 = 0, n1i = 0;
+      if (a2 > .0015 && a2 < .3) { const flow = ab + voiced * Ee * (.25 + ug * 1.6), shape = (1 - s3((a2 - .03) / .25)) * Math.min(1, a2 / .01); const w = R.g(); nzLP += (w - nzLP) * kNz; n1 = nzLP * flow * shape * (opts.fric || .006); n1i = Math.min(N - 1, ci + 2); }
+      let n2 = 0; if (burst > 1e-4) { n2 = R.g() * burst; burst *= kB; }
+      const y = tick(T, Ug, .72 - .12 * ab, n1i, n1, n2 ? Math.min(N - 1, ci + 1) : 0, n2);
+      out[n0 + j] = y - prevY; prevY = y;
+    }
+  }
+  const res = resample(out, FS, SR), g = opts.gain === undefined ? 1 : opts.gain, pcm = new Float32Array(res.length);
+  for (let i = 0; i < res.length; i++) pcm[i] = res[i] * g;
+  return { pcm, t0: track.t0 || 0, sr: SR };
+}
+
 // arbitrary-ratio band-limited resampler (Kaiser windowed sinc, pass band to 20 kHz)
 const RS_Z = 24, RS_K = 512, RS_TAB = (() => {
   const n = RS_Z * RS_K, h = new Float64Array(n + 2), beta = 9.5;
@@ -441,6 +487,6 @@ function resample(x, fin, fout) {
   return out;
 }
 
-return { set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
+return { drive, set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
 })();
 if (typeof module !== 'undefined') module.exports = VOICE;

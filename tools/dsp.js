@@ -91,7 +91,7 @@ const MEL = (() => { const cache = {}; return (sr, n) => {
   const pts = Array.from({ length: B + 2 }, (_, i) => inv(lo + (hi - lo) * i / (B + 1)) * n / sr);
   const fb = []; for (let b = 0; b < B; b++) { const w = new Float64Array(n / 2); for (let i = 0; i < n / 2; i++) { const a = (i - pts[b]) / (pts[b + 1] - pts[b]), c = (pts[b + 2] - i) / (pts[b + 2] - pts[b + 1]); w[i] = Math.max(0, Math.min(a, c)); } fb.push(w); }
   return cache[k] = fb; }; })();
-function mfcc(x, sr, from = 0, to = x.length) {
+function mfcc(x, sr, from = 0, to = x.length, raw = false) {
   const win = Math.round(.025 * sr), hop = Math.round(.01 * sr), n = 2048, fb = MEL(sr, n), out = [];
   const re = new Float64Array(n), im = new Float64Array(n);
   for (let s = from; s + win <= to; s += hop) {
@@ -99,9 +99,10 @@ function mfcc(x, sr, from = 0, to = x.length) {
     for (let i = 0; i < win; i++) re[i] = (x[s + i] - .97 * (s + i > 0 ? x[s + i - 1] : 0)) * (.54 - .46 * Math.cos(2 * Math.PI * i / (win - 1)));
     fft(re, im);
     const e = fb.map(w => { let t = 1e-10; for (let i = 0; i < n / 2; i++) if (w[i]) t += w[i] * (re[i] * re[i] + im[i] * im[i]); return Math.log(t); });
-    const c = []; for (let k = 1; k <= 13; k++) { let t = 0; for (let b = 0; b < e.length; b++) t += e[b] * Math.cos(Math.PI * k * (b + .5) / e.length); c.push(t); }
+    const c = raw ? [e.reduce((s, v) => s + v, 0) / e.length] : []; for (let k = 1; k <= 13; k++) { let t = 0; for (let b = 0; b < e.length; b++) t += e[b] * Math.cos(Math.PI * k * (b + .5) / e.length); c.push(t); }
     out.push(c);
   }
+  if (raw) return out;   // [c0 (mean log band energy), c1..c13], no normalisation
   const m = new Array(13).fill(0); for (const c of out) c.forEach((v, k) => m[k] += v / out.length);
   return out.map(c => c.map((v, k) => v - m[k]));
 }
