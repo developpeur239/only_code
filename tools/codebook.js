@@ -8,7 +8,7 @@ const fs = require('fs');
 const V = require('../src/audio/voice.js'), D = require('./dsp.js');
 const [out = 'codebook.bin', Nstr = '30000', who = 'grandpa'] = process.argv.slice(2);
 const N = +Nstr, NP = 9, NF = 14;   // params: q1 q2 q3 lip rnd cu cA vel closed?; features: c0 (level) + c1..c13
-const sg = V.SINGERS[who], scale = sg.L / 17.6;
+const sg = Object.assign({}, V.SINGERS[who], process.env.CB_L ? { L: +process.env.CB_L } : {}), scale = sg.L / 17.6;
 
 // random generator (deterministic)
 let st = 12345; const rnd = () => { st = (st * 1664525 + 1013904223) >>> 0; return st / 4294967296; };

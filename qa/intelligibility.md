@@ -109,6 +109,34 @@ Sur notre propre voix, l'inversion retrouve la structure de la phrase : la méth
 C'est une limite du modèle (trois modes de langue et une seule constriction, longueur de conduit fixe, spectre de source),
 pas des règles de gestes. C'est le résultat le plus important de cette série.
 
+## Deuxième enregistrement : 48 phrases, 4 contextes de voyelle
+
+Chaque consonne devant a, i/é/u, ou, et une voyelle nasale (`SETS=cols node tools/confusion.js`), dite deux fois :
+
+| | a | i/é/u | ou | nasale |
+|---|---|---|---|---|
+| voix humaine, Whisper | 96 % | 100 % | 96 % | 96 % |
+| voix humaine, Vosk | 100 % | 100 % | 100 % | 100 % |
+| grand-père, Whisper | 17 % | 38 % | 33 % | 33 % |
+| grand-père, Vosk | 33 % | 46 % | 46 % | 33 % |
+| hasard | 8 % | 8 % | 8 % | 8 % |
+
+## Couverture : le modèle peut-il produire les spectres d'une vraie voix ? (tools/coverage.js)
+
+Distance moyenne (13 cepstres) entre chaque tranche voisée de 10 ms et la forme la plus proche du dictionnaire :
+
+| | erreur | par cepstre c1..c13 |
+|---|---|---|
+| voix humaine (96 phrases) | 195 | 18 14 17 24 17 15 14 14 14 13 12 10 10 |
+| notre propre voix | 90 | 12 6 6 7 5 6 6 11 5 10 5 7 4 |
+
+| longueur du conduit | 16 cm | 17,6 cm | 19 cm |
+|---|---|---|---|
+| erreur sur la voix humaine | 192 | 195 | 200 |
+
+L'écart (×2,2) est réparti sur **tous** les coefficients, et la longueur du conduit n'y est pour presque rien : aucune cause
+unique, l'espace de formes du modèle est globalement trop étroit.
+
 ## Pistes suivantes
 
 1. **Élargir l'espace du modèle** et le mesurer avec le même outil : longueur de conduit ajustée au locuteur, plus de modes de
