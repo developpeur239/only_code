@@ -37,7 +37,8 @@ formants se mettent exactement à l'échelle.
 | `tools/fit.js` | trouve la posture de la langue et des lèvres de chaque voyelle française par optimisation (Nelder-Mead) sur des formants publiés, sous contraintes anatomiques | [`qa/vowels.md`](qa/vowels.md) |
 | `tools/calibrate.js` | règle le niveau du bruit de chaque consonne (rendu avec et sans source, différence de puissance) | [`qa/consonants.md`](qa/consonants.md) |
 | `tools/demo.js` | chante une berceuse, un fredonnement et une chaîne de voyelles avec les trois voix, mesure la justesse (YIN), le souffle (HNR) et les formants chantés (LPC) | [`qa/voice.md`](qa/voice.md) |
-| `tools/judge.py` | **le juge** : une reconnaissance vocale française hors ligne écoute les mots chantés et compte ceux qu'elle comprend (outil de développement, jamais dans le film) | [`qa/intelligibility.md`](qa/intelligibility.md) |
+| `tools/confusion.js` + `tools/score_judge.py` | **le juge** : « je dis ___ » dans une liste fermée, Whisper choisit la phrase la plus probable (outil de développement, jamais dans le film) | [`qa/intelligibility.md`](qa/intelligibility.md) |
+| `tools/transients.js` | test de non-régression : aucune consonne ne doit claquer | |
 
 ```bash
 node tools/fit.js          # postures des voyelles  -> src/audio/postures.js
@@ -57,7 +58,8 @@ Node 18 ou plus. Le juge demande Python, `vosk` et un modèle français.
 | justesse chantée | 2 à 10 cents d'écart moyen | ✅ ±10 cents |
 | souffle (HNR) | 15 à 19 dB | ✅ voix réalistes |
 | consonnes | 13 niveaux calibrés à ±0,5 dB | ✅ |
-| **mots compris par le juge** | **2 sur 51** | ❌ ≥ 90 %, chantier de la semaine 2 |
+| **mots compris par le juge** (liste fermée, juge Whisper) | **≈ 20 %** (eSpeak : 60 %, hasard : 8 %) | ❌ chantier en cours |
+| clics sur les consonnes | aucun, 16 consonnes × 6 tirages | ✅ |
 
 ## Le plan
 
