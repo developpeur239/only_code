@@ -226,12 +226,20 @@ function Folds(sg) {
     const qm = Math.pow(Q, 1.6), qk = Math.pow(Q, .4), m1 = P.m1 / qm, m2 = P.m2 / qm, k1 = P.k1 * qk, k2 = P.k2 * qk, kc = P.kc * qk;
     const a1 = 2 * P.lg * (x0 + st.x1), a2 = 2 * P.lg * (x0 + st.x2);
     // the mucosa seals progressively: the flow area tends to zero smoothly (softplus of width SOFT_A cm2), not with a corner
-    const am = Math.min(a1, a2), amin = SOFT_A > 0 ? SOFT_A * Math.log1p(Math.exp(Math.min(40, am / SOFT_A))) - SOFT_A * Math.log1p(Math.exp(-40)) : Math.max(0, am);
+    const am = Math.min(a1, a2);
+    let amin = SOFT_A > 0 ? SOFT_A * Math.log1p(Math.exp(Math.min(40, am / SOFT_A))) - SOFT_A * Math.log1p(Math.exp(-40)) : Math.max(0, am);
+    // the folds close like a zip, front to back over ZIP_MS: the open area is the average of the opening along the length,
+    // each point lagging a little behind the next (a running mean of the positive area over that time)
+    if (ZIP_MS > 0) { const n = st.zn || (st.zn = Math.max(1, Math.round(ZIP_MS / 1000 / dt))); if (!st.zb) { st.zb = new Float64Array(n); st.zi = 0; st.zs = 0; }
+      st.zs += amin - st.zb[st.zi]; st.zb[st.zi] = amin; st.zi = (st.zi + 1) % n; amin = Math.max(0, st.zs / n); }
     let U = 0;
     if (amin > 0) { const k = 2 * amin * amin / RHO_AIR, bq = k * Z, cq = k * (Ps - pinc); if (cq > 0) U = (-bq + Math.sqrt(bq * bq + 4 * cq)) / 2; }
     const psup = pinc + Z * U;
     let P1, P2;
-    if (a1 <= 0) { P1 = Ps; P2 = psup; } else if (a2 <= 0) { P1 = Ps; P2 = Ps; } else { P1 = Ps - .5 * RHO_AIR * (U / a1) ** 2; P2 = psup; }
+    // Bernoulli on the lower mass with the same (effective) passage the flow went through, never a narrower one:
+    // a softened flow over a raw, nearly shut area would suck the folds shut violently (the chatter of earlier attempts)
+    const a1e = Math.max(a1, amin);
+    if (a1 <= 0 && amin <= 1e-6) { P1 = Ps; P2 = psup; } else if (a2 <= 0 && amin <= 1e-6) { P1 = Ps; P2 = Ps; } else { P1 = Math.max(psup, Ps - .5 * RHO_AIR * (U / a1e) ** 2); P2 = psup; }
     let F1 = P.lg * P.d1 * P1, F2 = P.lg * P.d2 * P2, z1 = .1, z2 = .6;
     if (a1 < 0) { F1 -= 3 * k1 * (st.x1 + x0); z1 = 1.1; }  // collision: the tissue resists, damping rises
     if (a2 < 0) { F2 -= 3 * k2 * (st.x2 + x0); z2 = 1.6; }
@@ -349,7 +357,7 @@ const ASP_K = .02;
 // FOLDS: physical vocal folds (two-mass model) instead of the drawn LF pulse; PS0: lung pressure at Ee = 1 (dyn/cm2)
 // physical folds work (pitch exact, devoicing emerges) but sound 10-15 dB too bright and softening them destabilises the
 // coupling: opt-in until the mucosa is modelled (qa/intelligibility.md)
-let FOLDS = false, PS0 = 9500, TILT_FC = 0, SOFT_A = 0;
+let FOLDS = true, PS0 = 9500, TILT_FC = 0, SOFT_A = 0, ZIP_MS = .6;
 let AERO = true, AERO_C = .006, AERO_KF = .05, AERO_KA = .02;
 let WALL_ABS = .03;   // extra wall absorption per sample per section during a closure
 // a release burst lasts a few milliseconds (time constant): longer, it turns into a fricative
@@ -611,6 +619,6 @@ function resample(x, fin, fout) {
   return out;
 }
 
-return { set softA(v) { SOFT_A = v; }, set tilt(v) { TILT_FC = v; }, set folds(v) { FOLDS = v; }, get folds() { return FOLDS; }, set ps0(v) { PS0 = v; }, set f0ref(v) { F0REF = v; }, Folds, FLOW_S, RHO_C, set aero(v) { AERO = v; }, get aero() { return AERO; }, set aeroKF(v) { AERO_KF = v; }, set aeroKA(v) { AERO_KA = v; }, set aeroC(v) { AERO_C = v; }, drive, set model2(v) { USE2 = v && !!(MODES && POST2); }, get model2() { return USE2; }, set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
+return { set zip(v) { ZIP_MS = v; }, set softA(v) { SOFT_A = v; }, set tilt(v) { TILT_FC = v; }, set folds(v) { FOLDS = v; }, get folds() { return FOLDS; }, set ps0(v) { PS0 = v; }, set f0ref(v) { F0REF = v; }, Folds, FLOW_S, RHO_C, set aero(v) { AERO = v; }, get aero() { return AERO; }, set aeroKF(v) { AERO_KF = v; }, set aeroKA(v) { AERO_KA = v; }, set aeroC(v) { AERO_C = v; }, drive, set model2(v) { USE2 = v && !!(MODES && POST2); }, get model2() { return USE2; }, set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
 })();
 if (typeof module !== 'undefined') module.exports = VOICE;
