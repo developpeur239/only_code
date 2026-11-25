@@ -137,7 +137,40 @@ Distance moyenne (13 cepstres) entre chaque tranche voisée de 10 ms et la forme
 L'écart (×2,2) est réparti sur **tous** les coefficients, et la longueur du conduit n'y est pour presque rien : aucune cause
 unique, l'espace de formes du modèle est globalement trop étroit.
 
+## Reconstruction du conduit : un modèle de formes appris (tools/ceiling.js, invert_free.js, modes.js, fit2.js)
+
+**Le plafond** : pour 30 tranches de la voix réelle, la meilleure forme de conduit possible (optimisation directe) :
+
+| espace de formes | erreur au mieux |
+|---|---|
+| ancien modèle (3 modes inventés) | 193 |
+| tubes libres, 4 / 6 / 8 / 10 modes cosinus | 141 / 126 / 97 / 87 |
+| tubes libres 10 modes, longueur fixe | 92 |
+| **8 modes appris sur la voix réelle** | **100** |
+
+Méthode (celle de Story et Titze, mais depuis l'acoustique au lieu de l'IRM) : 3 867 tranches voisées inversées en formes libres,
+puis analyse en composantes principales (5 modes = 91 % de la variance, 8 modes = 98 %). Les voyelles sont ensuite placées dans cet
+espace en partant de la forme mesurée et ajustées sur les formants publiés : **15 voyelles à moins de 0,6 %**
+([`vowels2.md`](vowels2.md)), contre 2 à 4 % pour les voyelles arrondies dans l'ancien modèle.
+
+**Effet sur l'intelligibilité (4 contextes, grand-père)** :
+
+| | a | i/é/u | ou | nasale | moyenne |
+|---|---|---|---|---|---|
+| Whisper, ancien modèle | 17 % | 38 % | 33 % | 33 % | 30 % |
+| Whisper, modèle appris | 17 % | 29 % | 42 % | 25 % | 28 % |
+| Vosk, ancien modèle | 33 % | 46 % | 46 % | 33 % | 40 % |
+| Vosk, modèle appris | 29 % | 54 % | 46 % | 38 % | 42 % |
+
+Les voyelles sont meilleures, l'intelligibilité des consonnes ne bouge pas : sourdes entendues /s/ (ça, si, son), sonores entendues
+/l/ ou /v/ (la, lit, long, vous). **Le verrou restant est l'événement consonantique lui-même** (occlusion, explosion, friction,
+transitions rapides), précisément ce que la référence obtient par une aérodynamique physique et que nous ajoutons à la main.
+
 ## Pistes suivantes
+
+0. **Aérodynamique** (en cours) : débit d'air et pression dans le conduit, pour que friction, explosion et voisement pendant
+   l'occlusion naissent de la physique au lieu de sources de bruit calibrées à la main.
+
 
 1. **Élargir l'espace du modèle** et le mesurer avec le même outil : longueur de conduit ajustée au locuteur, plus de modes de
    langue, mâchoire et hauteur du larynx, deux constrictions, spectre de source ajusté. Critère : faire baisser l'erreur sur la

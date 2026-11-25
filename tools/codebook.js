@@ -30,6 +30,9 @@ function makeFeat(fs, n) {
   };
 }
 const n = 4096, T = V.Tract(sg), feat = makeFeat(T.fs, n);
+const FREE = process.env.CB_MODE === 'free', TILT = !!process.env.CB_TILT, featCache = {};
+const feats = fs_ => featCache[Math.round(fs_)] || (featCache[Math.round(fs_)] = makeFeat(fs_, n));
+let curFeat = feat, tilt = 0;
 const buf = new Float32Array(N * (NP + NF));
 const vowels = Object.keys(POSTURES);
 const t0 = Date.now();
@@ -43,10 +46,24 @@ for (let e = 0; e < N; e++) {
   if (rnd() < .5) { cu = .55 + rnd() * .42; cA = rnd() < .15 ? 0 : logU(.01, .7); }
   const vel = rnd() < .75 ? 0 : logU(.2, 1.6);
   const P = { q1, q2, q3, lip, rnd: rn, cons: cA < 9 ? [[1, cu, cA, 1.0]] : [], vel };
-  const ir = V.impulse(sg, P, n);
+  let ir;
+  if (FREE) {
+    // a ceiling test: any smooth tube (10 cosine terms on log-area), any length 14.5-19.5 cm, any lips, any source tilt
+    const Lf = 14.5 + rnd() * 5, Tf = V.Tract(Object.assign({}, sg, { L: Lf, nasal: sg.nasal * Lf / sg.L })), Af = new Float64Array(Tf.N);
+    V.areas(Tf.N, Tf.scale, { q1: 0, q2: 0, q3: 0, lip: 3, rnd: 0, cons: [] }, Af);
+    const a = []; for (let k = 1; k <= 10; k++) a.push((rnd() * 2 - 1) * 1.4 / Math.pow(k, .6));
+    const lipA = rnd() < .1 ? logU(.005, .1) : logU(.15, 6), lipSec = 1 + Math.floor(rnd() * 4);
+    for (let i = 0; i < Tf.N; i++) { const u = (i + .5) / Tf.N; let la = 0; a.forEach((c, k) => la += c * Math.cos((k + 1) * Math.PI * u)); Af[i] = Math.min(18, Math.max(.03, Af[i] * Math.exp(la))); if (i >= Tf.N - lipSec) Af[i] = lipA * Tf.scale * Tf.scale; }
+    V.settle(Tf, Af, vel);
+    ir = new Float64Array(n); for (let i = 0; i < n; i++) ir[i] = V.tick(Tf, i === 0 ? 1 : 0, .8, 0, 0, 0, 0);
+    curFeat = feats(Tf.fs);
+    tilt = TILT ? (rnd() * 2 - 1) * 1.2 : 0;     // source spectral slope variation, in octave-dB units of 6 dB
+    q1 = Lf; q2 = a[0]; q3 = a[1]; lip = lipA; cA = 9;
+  } else { ir = V.impulse(sg, P, n); curFeat = feat; tilt = 0; }
   const re = new Float64Array(n), im = new Float64Array(n); re.set(ir); D.fft(re, im);
   const spec = new Float64Array(n / 2); for (let i = 0; i < n / 2; i++) spec[i] = re[i] * re[i] + im[i] * im[i];
-  const f = feat(spec);
+  if (tilt) for (let i = 1; i < n / 2; i++) spec[i] *= Math.pow(i * (ir.fs || T.fs) / n / 1000 + .05, tilt * 2);
+  const f = curFeat(spec);
   closed = (lip < .002 || cA === 0) ? 1 : 0;
   const row = [q1, q2, q3, lip, rn, cu, cA, vel, closed, ...f];
   buf.set(row, e * (NP + NF));

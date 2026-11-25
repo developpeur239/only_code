@@ -14,6 +14,10 @@
 // ============================================================================
 const VOICE = (() => {
 'use strict';
+const LOAD = (g, f) => (typeof globalThis[g] !== 'undefined' && globalThis[g]) || (typeof require === 'function' ? (() => { try { return require(f); } catch (e) { return null; } })() : null);
+// the learned model (tools/modes.js) and the vowel postures measured on a real voice (tools/postures2.js)
+const MODES = LOAD('MODES', './modes.js'), POST2 = LOAD('POSTURES2', './postures2.js');
+let USE2 = !!(MODES && POST2);
 const POST = (typeof POSTURES !== 'undefined') ? POSTURES : (typeof require === 'function' ? (() => { try { return require('./postures.js'); } catch (e) { return null; } })() : null);
 
 // every singer's tract has the same 44 sections; a shorter tract simply runs faster (87.5 kHz for him,
@@ -91,7 +95,26 @@ const phi3 = u => pw(WIN, u) * Math.cos(2 * TAU * (u - MODE_C) / MODE_L);
 
 // a posture: q1 q2 (tongue modes, cm), lip (lip opening area cm2), rnd (0..1 rounding / protrusion),
 // jaw is folded into lip; constrictions: [m, u, Ac, w] for tip, dorsum, lips; velum (cm2)
+// the learned model: log-area = neutral + cosine series whose coefficients are mean + sum of b_j x mode_j (8 modes)
+const NEUT = {};
 function areas(N, scale, P, out) {
+  if (P.b && MODES) {
+    const key = N + ':' + scale; let A0 = NEUT[key];
+    if (!A0) { A0 = NEUT[key] = new Float64Array(N); areasOld(N, scale, { q1: 0, q2: 0, q3: 0, lip: 3, rnd: 0, cons: [] }, A0); }
+    const c = MODES.mean.slice(); for (let j = 0; j < P.b.length; j++) for (let k = 0; k < MODES.K; k++) c[k] += P.b[j] * MODES.sd[j] * MODES.modes[j][k];
+    const s2 = scale * scale;
+    for (let i = 0; i < N; i++) {
+      const u = (i + .5) / N; let la = 0; for (let k = 0; k < MODES.K; k++) la += c[k] * Math.cos((k + 1) * Math.PI * u);
+      let A = Math.min(18 * s2, Math.max(.03 * s2, A0[i] * Math.exp(la)));
+      if (i >= N - 2) A = Math.max(0, P.lip) * s2;
+      for (const cn of P.cons) { if (cn[0] <= 1e-4) continue; const du = (u - cn[1]) * 17.6, g = Math.min(1, 1.3 * Math.exp(-(du * du) / (cn[3] * cn[3]))), tgt = cn[2] * s2; if (A > tgt) A -= cn[0] * g * (A - tgt); }
+      out[i] = A < 1e-5 ? 0 : A;
+    }
+    return out;
+  }
+  return areasOld(N, scale, P, out);
+}
+function areasOld(N, scale, P, out) {
   // the lip tube is a length in cm (0.8 spread .. 1.6 protruded), scaled with the singer, so every voice gets the same shape
   const dx = 17.6 * scale / N, lipLen = (.8 + .8 * P.rnd) * scale, lipD = Math.sqrt(4 * Math.max(P.lip, .0) / Math.PI);
   for (let i = 0; i < N; i++) {
@@ -232,8 +255,11 @@ const VT = 1.3;
 const PLACE = { lab: [.995, 0, .7], tip: [.905, 0, .9], pal: [.80, 0, 1.2], dpal: [.80, 0, 1.4], uvu: [.60, 0, 1.4] };
 const isV = p => VOWELS.includes(p) || p === 'M';
 
+const FALL2 = { O: 'o', '9': '2', '9N': 'e~', 'O~': 'o~' };
 function substrate(v) {
   if (v === 'M') v = '@';
+  if (USE2) { let k = v.replace('~', 'N'); if (!POST2[k]) k = (FALL2[v] || FALL2[k] || '@').replace('~', 'N'); const p = POST2[k] || POST2['@'];
+    return { q1: 0, q2: 0, q3: 0, b: p.slice(1), lip: Math.exp(p[0]), rnd: ROUND[v] || 0 }; }
   const p = POST && POST[v.replace('~', 'N')] || POST && POST[v];
   if (!p) return { q1: 0, q2: 0, q3: 0, lip: 3, rnd: ROUND[v] || 0 };
   return { q1: p[0], q2: p[1], lip: p[2], q3: p[3] || 0, rnd: ROUND[v] || 0 };
@@ -291,6 +317,7 @@ function sing(singer, syl, opts = {}) {
   const A = new Float64Array(N);
   // channel followers
   const sub0 = substrate(segs[0].sub);
+  const fb = sub0.b ? sub0.b.map(v => F(v, .045)) : null;
   const fq1 = F(sub0.q1, .045), fq2 = F(sub0.q2, .045), fq3 = F(sub0.q3, .045), flip = F(sub0.lip, .025), frnd = F(sub0.rnd, .05);
   const fvel = F(0, .028), fab = F(1, .008), fon = F(0, .03);
   const F2 = (tc, to) => follower2(0, tc, to, DT);
@@ -319,7 +346,8 @@ function sing(singer, syl, opts = {}) {
     // ---- targets
     const sub = substrate(s.sub);
     let tq1 = sub.q1, tq2 = sub.q2, tq3 = sub.q3, tlip = sub.lip, trnd = sub.rnd, tvel = 0, tab = 0;
-    if (inSeg && C_ && C_.body && C_.bw) { const bd = substrate(C_.body), w = C_.bw; tq1 += (bd.q1 - tq1) * w; tq2 += (bd.q2 - tq2) * w; tq3 += (bd.q3 - tq3) * w; }
+    let tb = sub.b ? sub.b.slice() : null;
+    if (inSeg && C_ && C_.body && C_.bw) { const bd = substrate(C_.body), w = C_.bw; tq1 += (bd.q1 - tq1) * w; tq2 += (bd.q2 - tq2) * w; tq3 += (bd.q3 - tq3) * w; if (tb && bd.b) tb = tb.map((v, j) => v + (bd.b[j] - v) * w); }
     const tgtC = { lab: 0, tip: 0, pal: 0, dpal: 0, dor: 0, uvu: 0 };
     let fric = 0, fricPl = null, fricHF = 0;
     if (s.ph === 'M') { tgtC.lab = VT; chAc.lab = 0; tvel = 1.4; }
@@ -337,7 +365,7 @@ function sing(singer, syl, opts = {}) {
     // the folds part before a voiceless consonant closes, so it is voiceless from its first moment
     { const nx = inSeg ? null : s, nx2 = segs[si + 1]; for (const q of [nx, nx2]) if (q && CONS[q.ph] && CONS[q.ph].vl && t >= q.a - .03 && t < q.b) tab = 1; }
     // ---- follow
-    P.q1 = fq1(tq1); P.q2 = fq2(tq2); P.q3 = fq3(tq3); P.lip = flip(tlip); P.rnd = frnd(trnd);
+    P.q1 = fq1(tq1); P.q2 = fq2(tq2); P.q3 = fq3(tq3); if (fb && tb) P.b = fb.map((f, j) => f(tb[j])); P.lip = flip(tlip); P.rnd = frnd(trnd);
     const vel = fvel(tvel), ab = clamp(fab(phr ? tab : 1), 0, 1), on = fon(phr ? 1 : 0);
     for (let c = 0; c < keys.length; c++) { const k = keys[c], lc = lastC[k], m = clamp(ch[k](tgtC[k], lc && lc.tc, lc && lc.to), 0, 1); consArr[c][3] = lc && lc.w || (PLACE[k] ? PLACE[k][2] : 1.3); consArr[c][0] = tgtC[k] > 0 ? 1 - (1 - m) * (1 - m) : m; /* closing eases onto the contact, opening is quick */ consArr[c][1] = chU[k]; consArr[c][2] = chAc[k]; }
     P.cons = consArr;
@@ -487,6 +515,6 @@ function resample(x, fin, fout) {
   return out;
 }
 
-return { drive, set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
+return { drive, set model2(v) { USE2 = v && !!(MODES && POST2); }, get model2() { return USE2; }, set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
 })();
 if (typeof module !== 'undefined') module.exports = VOICE;

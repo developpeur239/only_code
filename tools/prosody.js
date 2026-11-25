@@ -5,7 +5,10 @@ const fs = require('fs');
 const D = require('./dsp.js');
 function load(f) { const b = fs.readFileSync(f), sr = b.readUInt32LE(24), ch = b.readUInt16LE(22), n = (b.length - 44) / 2 / ch, x = new Float64Array(n); for (let i = 0; i < n; i++) x[i] = b.readInt16LE(44 + 2 * i * ch) / 32768; return { x, sr }; }
 const PH = { pas: 'p a', bas: 'b a', tas: 't a', cas: 'k a', gars: 'g a', fa: 'f a', va: 'v a', 'ça': 's a', chat: 'S a', ma: 'm a', la: 'l a', rat: 'R a',
-  pie: 'p i', 'thé': 't e', paix: 'p E', pot: 'p o', pou: 'p u', pu: 'p y', peu: 'p 2', pain: 'p e~', pont: 'p o~', paon: 'p a~' };
+  pie: 'p i', 'thé': 't e', paix: 'p E', pot: 'p o', pou: 'p u', pu: 'p y', peu: 'p 2', pain: 'p e~', pont: 'p o~', paon: 'p a~',
+  bu: 'b y', qui: 'k i', gui: 'g i', 'fée': 'f e', vie: 'v i', si: 's i', chez: 'S e', mie: 'm i', lit: 'l i', riz: 'R i',
+  bout: 'b u', tout: 't u', cou: 'k u', 'goût': 'g u', fou: 'f u', vous: 'v u', sous: 's u', chou: 'S u', mou: 'm u', loup: 'l u', roux: 'R u',
+  bon: 'b o~', ton: 't o~', quand: 'k a~', gant: 'g a~', fond: 'f o~', vont: 'v o~', son: 's o~', chant: 'S a~', mon: 'm o~', long: 'l o~', rond: 'R o~' };
 function measure(file, word, who = 'grandpa') {
   const { x, sr } = load(file);
   const H = Math.round(.01 * sr), env = []; for (let i = 0; i + H < x.length; i += H) env.push(D.rmsDb(x, i, i + H));
