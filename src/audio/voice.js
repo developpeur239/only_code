@@ -294,6 +294,8 @@ function plan(syl) {
 
 // aspiration gain, calibrated by tools/calibrate.js so that sg.breath maps to a harmonics-to-noise ratio
 const ASP_K = .02;
+// aerodynamics (normalised: lung pressure 1, flow = area x sqrt(pressure drop)); see sing()
+let AERO = true, AERO_C = .006, AERO_KF = .05, AERO_KA = .02;
 let WALL_ABS = .03;   // extra wall absorption per sample per section during a closure
 // a release burst lasts a few milliseconds (time constant): longer, it turns into a fricative
 const BURST_T = .0025;
@@ -332,10 +334,11 @@ function sing(singer, syl, opts = {}) {
   // state
   let si = 0, ph = R(), Rd = sg.Rd, Ee = 0, perJ = 0, perS = 0, burst = 0, burstAt = 0, burstHF = 0;
   let hp1 = 0, hp1x = 0, nzLP = 0, bLP = 0, bLo = 0, prevY = 0;
+  const aero = opts.aero !== undefined ? opts.aero : AERO; let Po = 0, nzA = 0, aspA = 0, nzBand = BAND.tip, nzObs = 1;
   const P = { q1: 0, q2: 0, q3: 0, lip: 3, rnd: 0, cons: [] };
   const consArr = Object.keys(ch).map(k => [0, chU[k], 0, PLACE[k] ? PLACE[k][2] : 1.3]);
   const keys = Object.keys(ch);
-  let nzI = 0, nzA = 0, nzHF = 0, voicedNow = 1, f0 = 220, vibAge = 0, curNote = -1, noteAge = 0;
+  let nzI = 0, nzHF = 0, voicedNow = 1, f0 = 220, vibAge = 0, curNote = -1, noteAge = 0;
   for (let n0 = 0; n0 < nOut; n0 += CB) {
     const t = tStart + n0 / FS;
     while (si < segs.length - 1 && t >= segs[si].b) si++;
@@ -392,6 +395,27 @@ function sing(singer, syl, opts = {}) {
       if (a < .002 * T.scale * T.scale) closedFor[k] += DT;
       else { if (closedFor[k] > .015 && armed[k]) { burst = clamp(closedFor[k] / .05, .4, 1) * armed[k].gb; burstAt = Math.min(N - 1, i0 + 1); bBand = BAND[k]; kBurst = Math.exp(-1 / ((armed[k].bt || BURST_T) * FS)); } closedFor[k] = 0; armed[k] = null; }
     }
+    // ---- aerodynamics: air from the lungs through the glottis and out of the narrowest place (or the nose).
+    // The oral pressure Po fills behind a closure (the walls give: compliance), so the folds lose their drive by
+    // themselves during a stop, and the air that rushes out at the release, or squeezes through a fricative's channel,
+    // is what makes the noise: release bursts, frication and aspiration all come out of this one balance.
+    let aeroVoice = 1;
+    if (aero) {
+      const s2 = T.scale * T.scale, Ag = (.02 + .25 * ab) * s2 + .05 * s2 * (1 - ab) * on, Ao = cmin + (vel > .05 ? Math.min(vel, .4) * s2 : 0);
+      if (Ao > .5 * s2) Po = Ag * Ag / (Ag * Ag + Ao * Ao);
+      else for (let k = 0; k < 8; k++) { const dP = (Ag * Math.sqrt(Math.max(0, 1 - Po)) - Ao * Math.sqrt(Math.max(0, Po))) / (AERO_C * s2) * DT / 8; Po = clamp(Po + dP, 0, 1); }
+      Po *= on > .02 ? 1 : 0;
+      // turbulence: grows with the jet's pressure drop (Stevens: amplitude ~ A^1/4 P^3/4), only past a threshold
+      const a1 = Ao / s2, Pj = Po;
+      nzA = cmin < .5 * s2 ? AERO_KF * Math.pow(Math.max(a1, 1e-4), .25) * Math.pow(Pj, .75) * s3((Pj - .01) / .05) * nzObs : 0;
+      // glottal turbulence (aspiration) while the folds are held apart and air flows
+      aspA = AERO_KA * Math.pow(ab, 1) * Math.pow(Math.max(0, 1 - Po), .75) * on;
+      // the folds vibrate only with enough pressure across them
+      aeroVoice = Math.max(0, 1 - Po) * s3((1 - Po - .05) / .2);   // pulse amplitude follows the pressure across the folds
+    }
+    // the consonant at the narrowest place decides the noise colour and its obstacle (teeth make /s/ loud)
+    { let best = null, bd = 1e9; for (const k of keys) { const i0 = clamp(Math.round(chU[k] * N - .5), 0, N - 1); if (Math.abs(i0 - cidx) < bd && lastC[k]) { bd = Math.abs(i0 - cidx); best = k; } }
+      if (best) { nzBand = BAND[best]; nzObs = lastC[best].g / .01 * .1; } }
     // ---- pitch: the note under us, a little ahead of the vowel
     let ni = 0; for (let k = 0; k < syl.length; k++) if (t >= syl[k].t0 - .06) ni = k;
     if (ni !== curNote) { curNote = ni; noteAge = 0; }
@@ -407,7 +431,7 @@ function sing(singer, syl, opts = {}) {
     // ---- source strength
     const dyn = note.dyn === undefined ? .6 : note.dyn;
     const decl = 1 - .25 * clamp((t - note.t0) / Math.max(.3, dur), 0, 1) * (dur > 1 ? 1 : .3);
-    const tEe = on * (opts.amp ? opts.amp(t) : (.35 + .65 * dyn) * decl) * (1 + .05 * wAmp()) * (1 - occlE) * (1 - .45 * narrowF);
+    const tEe = on * (opts.amp ? opts.amp(t) : (.35 + .65 * dyn) * decl) * (1 + .05 * wAmp()) * (aero ? aeroVoice : (1 - occlE) * (1 - .45 * narrowF));
     const tRd = (opts.Rd || sg.Rd) + (1 - dyn) * (opts.Rd ? .2 : .5) + (1 - on) * .8 + .08 * wRd();
     if (opts.trace) opts.trace.push([t, f0, tEe, tRd, ab, vel, cmin]);
     // ---- render the block
@@ -424,11 +448,12 @@ function sing(singer, syl, opts = {}) {
       // turbulence in the glottal jet: band-limited (200 Hz - 3.5 kHz in volume velocity, rising after radiation)
       const asp = R.g(); hp1x += (asp - hp1x) * kAsp; hp1 += (hp1x - hp1) * kAspH; const aspN = hp1x - hp1;
       // (pulsed with the opening of the folds, as in real voices; a steady hiss only when they are held apart)
-      Ug += aspN * Ee * (sg.breath * (.12 + ug * 7) * voiced * ASP + ab * on * ASP * .3);
+      Ug += aspN * Ee * sg.breath * (.12 + ug * 7) * voiced * ASP + (aero ? aspN * aspA : aspN * Ee * ab * on * ASP * .3);
       const rg = .72 - .12 * ab;
       // turbulence at the narrowest place downstream of the glottis
       let n1 = 0, n1i = 0;
-      if (fricPl || cmin < .35 * T.scale * T.scale) {
+      if (aero) { if (nzA > 1e-5) { const w = R.g(); bLP += (w - bLP) * nzBand[1]; bLo += (bLP - bLo) * nzBand[0]; n1 = (bLP - bLo) * nzA; n1i = Math.min(N - 1, cidx + 1); } }
+      else if (fricPl || cmin < .35 * T.scale * T.scale) {
         const flow = ab * on + voiced * Ee * (.25 + ug * 1.6);
         const a = cmin / (T.scale * T.scale);
         const shape = a < .0015 ? 0 : (1 - s3((a - .03) / .4)) * Math.min(1, a / .01);
@@ -438,7 +463,7 @@ function sing(singer, syl, opts = {}) {
       }
       // release burst
       let n2 = 0, n2i = 0;
-      if (burst > 1e-3) { const w = R.g(); bLP += (w - bLP) * bBand[1]; bLo += (bLP - bLo) * bBand[0]; n2 = (bLP - bLo) * burst; n2i = burstAt; burst *= kBurst; }
+      if (!aero && burst > 1e-3) { const w = R.g(); bLP += (w - bLP) * bBand[1]; bLo += (bLP - bLo) * bBand[0]; n2 = (bLP - bLo) * burst; n2i = burstAt; burst *= kBurst; }
       if (opts.dry) { n1 = 0; n2 = 0; }
       const y = tick(T, Ug, rg, n1i, n1, n2i, n2);
       out[n0 + j] = y - prevY; prevY = y;
@@ -515,6 +540,6 @@ function resample(x, fin, fout) {
   return out;
 }
 
-return { drive, set model2(v) { USE2 = v && !!(MODES && POST2); }, get model2() { return USE2; }, set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
+return { set aero(v) { AERO = v; }, get aero() { return AERO; }, set aeroKF(v) { AERO_KF = v; }, set aeroKA(v) { AERO_KA = v; }, set aeroC(v) { AERO_C = v; }, drive, set model2(v) { USE2 = v && !!(MODES && POST2); }, get model2() { return USE2; }, set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
 })();
 if (typeof module !== 'undefined') module.exports = VOICE;

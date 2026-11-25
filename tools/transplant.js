@@ -7,8 +7,7 @@ const fs = require('fs'), path = require('path');
 const V = require('../src/audio/voice.js'), D = require('./dsp.js');
 const [listFile, out, who = 'grandpa'] = process.argv.slice(2);
 const L = JSON.parse(fs.readFileSync(listFile, 'utf8')), root = path.dirname(path.dirname(listFile));
-const PH = { pas: 'p a', bas: 'b a', tas: 't a', cas: 'k a', gars: 'g a', fa: 'f a', va: 'v a', 'ça': 's a', chat: 'S a', ma: 'm a', la: 'l a', rat: 'R a',
-  pie: 'p i', 'thé': 't e', paix: 'p E', pot: 'p o', pou: 'p u', pu: 'p y', peu: 'p 2', pain: 'p e~', pont: 'p o~', paon: 'p a~' };
+const PH = require('./prosody.js').PH;   // every word of both recordings
 function load(f) { const b = fs.readFileSync(f), sr = b.readUInt32LE(24), n = (b.length - 44) / 2, x = new Float64Array(n); for (let i = 0; i < n; i++) x[i] = b.readInt16LE(44 + 2 * i) / 32768; return { x, sr }; }
 fs.mkdirSync(out, { recursive: true });
 const items = [];
