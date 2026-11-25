@@ -106,7 +106,9 @@ function areas(N, scale, P, out) {
     for (let i = 0; i < N; i++) {
       const u = (i + .5) / N; let la = 0; for (let k = 0; k < MODES.K; k++) la += c[k] * Math.cos((k + 1) * Math.PI * u);
       let A = Math.min(18 * s2, Math.max(.03 * s2, A0[i] * Math.exp(la)));
-      if (i >= N - 2) A = Math.max(0, P.lip) * s2;
+      // the lip tube: 2 sections spread, up to 4 protruded and narrowed when rounded (/ʃ/, /u/, /y/)
+      const lipN = 2 + Math.round(2 * (P.rnd || 0));
+      if (i >= N - lipN) A = Math.max(0, P.lip) * (1 - .45 * (P.rnd || 0)) * s2;
       for (const cn of P.cons) { if (cn[0] <= 1e-4) continue; const du = (u - cn[1]) * 17.6, g = Math.min(1, 1.3 * Math.exp(-(du * du) / (cn[3] * cn[3]))), tgt = cn[2] * s2; if (A > tgt) A -= cn[0] * g * (A - tgt); }
       out[i] = A < 1e-5 ? 0 : A;
     }
@@ -284,14 +286,14 @@ const VOWELS = ['i', 'e', 'E', 'a', 'O', 'o', 'u', 'y', '2', '9', '@', 'a~', 'o~
 const ROUND = { i: 0, e: 0, E: 0, a: 0, O: .5, o: .8, u: 1, y: 1, '2': .8, '9': .5, '@': .4, 'a~': .2, 'o~': .8, 'e~': 0, '9~': .5 };
 const NASALV = { 'a~': 1.2, 'o~': 1.1, 'e~': 1.1, '9~': 1.1 };
 const CONS = {
-  p: { k: 's', pl: 'lab', vl: 1, d: .075 }, b: { k: 's', pl: 'lab', vl: 0, d: .07 },
-  t: { k: 's', pl: 'tip', vl: 1, d: .07 }, d: { k: 's', pl: 'tip', vl: 0, d: .065 },
-  k: { k: 's', pl: 'dor', vl: 1, d: .075 }, g: { k: 's', pl: 'dor', vl: 0, d: .07 },
-  f: { k: 'f', pl: 'lab', vl: 1, d: .10, Ac: .10 }, v: { k: 'f', pl: 'lab', vl: 0, d: .08, Ac: .12 },
-  s: { k: 'f', pl: 'tip', vl: 1, d: .11, Ac: .05, hf: 1 }, z: { k: 'f', pl: 'tip', vl: 0, d: .09, Ac: .06, hf: 1 },
-  S: { k: 'f', pl: 'pal', vl: 1, d: .12, Ac: .12, rnd: 1 }, Z: { k: 'f', pl: 'pal', vl: 0, d: .10, Ac: .13, rnd: 1 },
+  p: { k: 's', pl: 'lab', vl: 1, d: .12 }, b: { k: 's', pl: 'lab', vl: 0, d: .065 },
+  t: { k: 's', pl: 'tip', vl: 1, d: .12 }, d: { k: 's', pl: 'tip', vl: 0, d: .065 },
+  k: { k: 's', pl: 'dor', vl: 1, d: .11 }, g: { k: 's', pl: 'dor', vl: 0, d: .06 },
+  f: { k: 'f', pl: 'lab', vl: 1, d: .14, Ac: .10 }, v: { k: 'f', pl: 'lab', vl: 0, d: .055, Ac: .12 },
+  s: { k: 'f', pl: 'tip', vl: 1, d: .11, Ac: .05, hf: 1, u: .89 }, z: { k: 'f', pl: 'tip', vl: 0, d: .08, Ac: .06, hf: 1, u: .89 },
+  S: { k: 'f', pl: 'pal', vl: 1, d: .11, Ac: .14, rnd: 1, u: .76 }, Z: { k: 'f', pl: 'pal', vl: 0, d: .08, Ac: .15, rnd: 1, u: .76 },
   m: { k: 'n', pl: 'lab', vl: 0, d: .08 }, n: { k: 'n', pl: 'tip', vl: 0, d: .07 }, J: { k: 'n', pl: 'dpal', vl: 0, d: .08 },
-  l: { k: 'l', pl: 'tip', vl: 0, d: .06, Ac: .28 }, R: { k: 'l', pl: 'uvu', vl: 0, d: .07, Ac: .09, nz: .25 },
+  l: { k: 'l', pl: 'tip', vl: 0, d: .06, Ac: .28 }, R: { k: 'l', pl: 'uvu', vl: 0, d: .06, Ac: .22, nz: .25 },
   j: { k: 'g', v: 'i', pl: 'dpal', d: .055, Ac: .22 }, w: { k: 'g', v: 'u', pl: 'lab', d: .055, Ac: .22 }, H: { k: 'g', v: 'y', pl: 'lab', d: .055, Ac: .22 },
   M: { k: 'h', d: 0 }, // hum nucleus: lips shut, velum open, held like a vowel
 };
@@ -329,7 +331,8 @@ function dorsumPlace(v) { const s = substrate(v); return s.q1 > .3 ? .76 : s.q1 
 // syllables: [{ ph: ['d','u','s'], midi, t0 (vowel onset, s), t1 (note end, s), dyn (0..1) }]
 // returns timelines of step targets for every articulator channel
 // diction: singers lengthen consonants to be understood; 1 = conversational
-let DICTION = 1.35;
+let DICTION = 1;
+let BODY_TAU = .02, ONSET_T = .04;
 function plan(syl) {
   const segs = []; const dur = c => CONS[c].d * (CONS[c].k === 'g' ? 1 : DICTION);
   for (let k = 0; k < syl.length; k++) {
@@ -374,7 +377,8 @@ function sing(singer, syl, opts = {}) {
   const sg = typeof singer === 'string' ? SINGERS[singer] : singer;
   const R = rng((opts.seed || 0) * 7919 + sg.seed), T = Tract(sg), N = T.N;
   const FS = T.fs, CB = T.cb, DT = T.dt, F = (x, tau) => follower(x, tau, DT);
-  const kEnv = T.lp(28), kNzH = T.lp(26600), kNzL = T.lp(11200), kBH = T.lp(32000), kBL = T.lp(9700), BAND = { lab: [0, T.lp(1800)], tip: [T.lp(2600), T.lp(30000)], pal: [T.lp(1800), T.lp(9000)], dpal: [T.lp(1800), T.lp(7000)], dor: [T.lp(1100), T.lp(4200)], uvu: [T.lp(600), T.lp(2500)] };
+  const kEnv = T.lp(28), kNzH = T.lp(26600), kNzL = T.lp(11200), kBH = T.lp(32000), kBL = T.lp(9700), // noise colour by place (band of the turbulence source), set from a real voice's centres of gravity: /s/ ~5.5 kHz, /ʃ/ ~2.2 kHz, /ʁ/ ~0.9 kHz
+  BAND = { lab: [0, T.lp(1800)], tip: [T.lp(3800), T.lp(30000)], pal: [T.lp(1200), T.lp(3800)], dpal: [T.lp(1800), T.lp(7000)], dor: [T.lp(1100), T.lp(4200)], uvu: [T.lp(400), T.lp(1600)] };
   let bBand = BAND.tip, kBurst = Math.exp(-1 / (BURST_T * FS)); const _u = 0, kAsp = T.lp(3500), kAspH = T.lp(200), ASP = opts.asp === undefined ? ASP_K : opts.asp;
   const segs = plan(syl);
   const tStart = Math.max(0, segs[0].a - .25), tEnd = syl[syl.length - 1].t1 + (opts.tail || .35);
@@ -382,7 +386,8 @@ function sing(singer, syl, opts = {}) {
   const A = new Float64Array(N);
   // channel followers
   const sub0 = substrate(segs[0].sub);
-  const fb = sub0.b ? sub0.b.map(v => F(v, .045)) : null;
+  // the tongue body reaches its vowel within a short syllable (measured on a real voice: F2 settles in ~60 ms)
+  const fb = sub0.b ? sub0.b.map(v => F(v, BODY_TAU)) : null;
   const fq1 = F(sub0.q1, .045), fq2 = F(sub0.q2, .045), fq3 = F(sub0.q3, .045), flip = F(sub0.lip, .025), frnd = F(sub0.rnd, .05);
   const fvel = F(0, .028), fab = F(1, .008), fon = F(0, .03);
   const F2 = (tc, to) => follower2(0, tc, to, DT);
@@ -496,7 +501,9 @@ function sing(singer, syl, opts = {}) {
     const dyn = note.dyn === undefined ? .6 : note.dyn;
     const decl = 1 - .25 * clamp((t - note.t0) / Math.max(.3, dur), 0, 1) * (dur > 1 ? 1 : .3);
     // with physical folds the pressure across them does the work of aeroVoice/occlusion by itself
-    const tEe = on * (opts.amp ? opts.amp(t) : (.35 + .65 * dyn) * decl) * (1 + .05 * wAmp()) * (folds ? 1 : aero ? aeroVoice : (1 - occlE) * (1 - .45 * narrowF));
+    // after a consonant the vowel swells in over a few tens of ms (measured: 30-50 ms), it does not snap on
+    let swell = 1; { const pv = segs[si - 1]; if (s.v && pv && CONS[pv.ph] && CONS[pv.ph].k !== 'h') swell = .45 + .55 * s3((t - s.a) / ONSET_T); if (inSeg && C_ && C_.k === 's') swell = .7; }
+    const tEe = swell * on * (opts.amp ? opts.amp(t) : (.35 + .65 * dyn) * decl) * (1 + .05 * wAmp()) * (folds ? 1 : aero ? aeroVoice : (1 - occlE) * (1 - .45 * narrowF));
     const tRd = (opts.Rd || sg.Rd) + (1 - dyn) * (opts.Rd ? .2 : .5) + (1 - on) * .8 + .08 * wRd();
     if (opts.trace) opts.trace.push([t, f0, tEe, tRd, ab, vel, cmin, folds ? folds.U : 0, folds ? folds.corr : 0, Po, folds ? folds.x1 : 0]);
     // ---- render the block
@@ -619,6 +626,6 @@ function resample(x, fin, fout) {
   return out;
 }
 
-return { set zip(v) { ZIP_MS = v; }, set softA(v) { SOFT_A = v; }, set tilt(v) { TILT_FC = v; }, set folds(v) { FOLDS = v; }, get folds() { return FOLDS; }, set ps0(v) { PS0 = v; }, set f0ref(v) { F0REF = v; }, Folds, FLOW_S, RHO_C, set aero(v) { AERO = v; }, get aero() { return AERO; }, set aeroKF(v) { AERO_KF = v; }, set aeroKA(v) { AERO_KA = v; }, set aeroC(v) { AERO_C = v; }, drive, set model2(v) { USE2 = v && !!(MODES && POST2); }, get model2() { return USE2; }, set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
+return { set bodyTau(v) { BODY_TAU = v; }, set onsetT(v) { ONSET_T = v; }, set zip(v) { ZIP_MS = v; }, set softA(v) { SOFT_A = v; }, set tilt(v) { TILT_FC = v; }, set folds(v) { FOLDS = v; }, get folds() { return FOLDS; }, set ps0(v) { PS0 = v; }, set f0ref(v) { F0REF = v; }, Folds, FLOW_S, RHO_C, set aero(v) { AERO = v; }, get aero() { return AERO; }, set aeroKF(v) { AERO_KF = v; }, set aeroKA(v) { AERO_KA = v; }, set aeroC(v) { AERO_C = v; }, drive, set model2(v) { USE2 = v && !!(MODES && POST2); }, get model2() { return USE2; }, set wallAbs(v) { WALL_ABS = v; }, set diction(v) { DICTION = v; }, SR, NS, SINGERS, VOWELS, CONS, ROUND, NASALV, Tract, areas, settle, tick, impulse, sing, plan, lfPulse, glottalFlow, resample, substrate };
 })();
 if (typeof module !== 'undefined') module.exports = VOICE;
