@@ -166,6 +166,20 @@ Les voyelles sont meilleures, l'intelligibilité des consonnes ne bouge pas : so
 /l/ ou /v/ (la, lit, long, vous). **Le verrou restant est l'événement consonantique lui-même** (occlusion, explosion, friction,
 transitions rapides), précisément ce que la référence obtient par une aérodynamique physique et que nous ajoutons à la main.
 
+## La chimère (tools/chimera.js) : où est le défaut ?
+
+Diagnostic uniquement : on échange les 250 ms autour de la consonne testée entre la voix humaine et la copie du modèle
+(même rythme, même mélodie), puis on juge (Whisper, 95 phrases, 4 contextes).
+
+| | a | i/é/u | ou | nasale | total |
+|---|---|---|---|---|---|
+| notre phrase seule | 17 % | 29 % | 42 % | 42 % | **33 %** |
+| phrase humaine + **notre** consonne | 22 % | 33 % | 50 % | 33 % | **35 %** |
+| notre phrase + consonne **humaine** | 74 % | 67 % | 88 % | 92 % | **80 %** |
+
+Verdict : notre voix, nos voyelles et notre prosodie sont acceptables pour le juge. **Tout le défaut tient dans la fenêtre de la
+consonne** (occlusion ou friction, relâchement, début de transition).
+
 ## Pistes suivantes
 
 0. **Aérodynamique** (en cours) : débit d'air et pression dans le conduit, pour que friction, explosion et voisement pendant
